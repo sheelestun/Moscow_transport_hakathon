@@ -70,7 +70,7 @@ def server_proc(port: int, args: argparse.Namespace, ready, done, out: str) -> N
         srv = NdtpServer(q, host="127.0.0.1", port=port, idle_timeout=600,
                          max_connections=args.max_connections, backlog=args.backlog)
         await srv.start()
-        units, reqs, t_recv = array("q"), array("q"), array("d")
+        units, reqs, t_read, t_recv = array("q"), array("q"), array("d"), array("d")
         lags, cpu = array("d"), []
 
         async def consume() -> None:
@@ -78,7 +78,8 @@ def server_proc(port: int, args: argparse.Namespace, ready, done, out: str) -> N
                 fix = await q.get()
                 units.append(fix.unit_id)
                 reqs.append(fix.request_id)
-                t_recv.append(time.time())
+                t_read.append(fix.received_at)  # when the server read the bytes off the socket
+                t_recv.append(time.time())      # when the consumer got the fix off the queue
 
         async def sample() -> None:
             while True:
@@ -92,7 +93,7 @@ def server_proc(port: int, args: argparse.Namespace, ready, done, out: str) -> N
         await asyncio.get_running_loop().run_in_executor(None, done.wait)
         snap = srv.snapshot()
         with open(out, "wb") as f:
-            pickle.dump({"units": units, "reqs": reqs, "t_recv": t_recv, "lags": lags, "cpu": cpu,
+            pickle.dump({"units": units, "reqs": reqs, "t_read": t_read, "t_recv": t_recv, "lags": lags, "cpu": cpu,
                          "stats": snap["stats"], "framing": snap["framing"],
                          "max_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}, f)
         for t in tasks:
@@ -215,10 +216,15 @@ def main() -> None:
     for c in C:
         for u, r, t in zip(c["units"], c["reqs"], c["times"]):
             sent[(u, r)] = t
-    recv = {}
-    for u, r, t in zip(S["units"], S["reqs"], S["t_recv"]):
+    recv, read = {}, {}
+    for u, r, t_rd, t in zip(S["units"], S["reqs"], S["t_read"], S["t_recv"]):
         recv[(u, r)] = t
+        read[(u, r)] = t_rd
     lat_ms = [(recv[k] - t) * 1000 for k, t in sent.items() if k in recv]
+    sock_ms = [(read[k] - t) * 1000 for k, t in sent.items() if k in read]         # write() -> server read
+    queue_ms = [(recv[k] - read[k]) * 1000 for k in recv]                           # server read -> consumer
+    send_times = sorted(sent.values())
+    achieved = len(send_times) / (send_times[-1] - send_times[0]) if len(send_times) > 1 else float("nan")
     connect_ms = [x * 1000 for c in C for x in c["connect_s"]]
     failures: dict[str, int] = {}
     for c in C:
@@ -226,12 +232,19 @@ def main() -> None:
             failures[k] = failures.get(k, 0) + v
 
     # per-tick burst drain (lockstep): tick start -> last packet of that tick at the consumer
-    drain_ms = []
+    # and send spread: tick start -> last packet of that tick written by the generator. If the spread is
+    # close to the drain, the generator (not the server) set the pace and the "burst" was really a ramp.
+    drain_ms, spread_ms = [], []
     if args.mode == "lockstep":
-        by_req: dict[int, float] = {}
+        last_recv: dict[int, float] = {}
+        last_send: dict[int, float] = {}
         for (u, r), t in recv.items():
-            by_req[r] = max(by_req.get(r, 0.0), t)
-        drain_ms = [(t - (t_send + (r - 2) * args.interval)) * 1000 for r, t in by_req.items()]
+            last_recv[r] = max(last_recv.get(r, 0.0), t)
+        for (u, r), t in sent.items():
+            last_send[r] = max(last_send.get(r, 0.0), t)
+        tick = lambda r: t_send + (r - 2) * args.interval  # noqa: E731
+        drain_ms = [(t - tick(r)) * 1000 for r, t in last_recv.items()]
+        spread_ms = [(t - tick(r)) * 1000 for r, t in last_send.items()]
 
     window = (t_send, t_send + args.packets * args.interval)
     cpu = [c for c in S["cpu"] if window[0] <= c[0] <= window[1]]
@@ -242,7 +255,8 @@ def main() -> None:
 
     print(f"\n=== NDTP load test: {args.units} units, every {args.interval:g}s, {args.mode}, {args.loop}, "
           f"backlog {args.backlog}, {args.clients} client procs ===")
-    print(f"offered load        {rate:,.0f} packets/s  ({args.units * args.packets:,} packets total)")
+    print(f"offered load        {rate:,.0f} packets/s nominal, {achieved:,.0f} packets/s achieved by the generator "
+          f"({args.units * args.packets:,} packets total)")
     print(f"connect storm       {len(connect_ms)}/{args.units} connected, failures {failures or 'none'}")
     print(f"  connect time      p50 {pct(connect_ms, 50):.0f} ms  p99 {pct(connect_ms, 99):.0f} ms  "
           f"max {max(connect_ms, default=float('nan')):.0f} ms")
@@ -250,7 +264,13 @@ def main() -> None:
           f"(lost {len(sent) - len(lat_ms)}), server dropped {S['stats']['fixes_dropped']}")
     print(f"latency send→queue  p50 {pct(lat_ms, 50):.1f} ms  p95 {pct(lat_ms, 95):.1f} ms  "
           f"p99 {pct(lat_ms, 99):.1f} ms  max {max(lat_ms, default=float('nan')):.1f} ms")
+    print(f"  = socket→read     p50 {pct(sock_ms, 50):.1f} ms  p99 {pct(sock_ms, 99):.1f} ms  "
+          f"(kernel buffers + waiting for the event loop to read)")
+    print(f"  + read→consumer   p50 {pct(queue_ms, 50):.1f} ms  p99 {pct(queue_ms, 99):.1f} ms  "
+          f"(in-process queue: consumer scheduled after the readers)")
     if drain_ms:
+        print(f"send spread         median {pct(spread_ms, 50):.0f} ms  max {max(spread_ms):.0f} ms  "
+              f"(tick → last packet of the tick written by the generator)")
         print(f"burst drain         median {pct(drain_ms, 50):.0f} ms  max {max(drain_ms):.0f} ms  "
               f"(tick → last packet of the tick consumed; must stay < interval {args.interval * 1000:.0f} ms)")
     rss_mb = S["max_rss_kb"] / (1024 * 1024 if sys.platform == "darwin" else 1024)  # macOS reports bytes
