@@ -84,17 +84,20 @@ services:
     restart: unless-stopped
 
   backend-dev:
-    # Новый боевой бэкенд (./backend). WIP: пока в src/ нет main.py, контейнер
-    # будет падать на старте — это ожидаемо, поэтому он и вынесен в профиль `dev`
+    # Новый боевой бэкенд (./backend). WIP, поэтому вынесен в профиль `dev`
     # и не является зависимостью ни для frontend, ни для ndtp-emu.
     <<: *backend-common
     profiles:
       - dev
     build: ./backend
     container_name: msk-backend-dev
+    # Без ML бэкенд работает в деградированном режиме, а не ждёт его: не наследуем depends_on на ml.
+    depends_on: []
     # Наружу — 8010, чтобы можно было держать mock и новый бэкенд одновременно.
+    # 9201 — NDTP-приёмник: сюда подключаются эмулятор и терминалы (TCP, не HTTP).
     ports:
       - "${BACKEND_DEV_PORT:-8010}:8000"
+      - "${NDTP_PORT:-9201}:9201"
     environment:
       <<: *backend-env
       # Собственный алиас в логах/метриках, чтобы не путать с mock'ом.
