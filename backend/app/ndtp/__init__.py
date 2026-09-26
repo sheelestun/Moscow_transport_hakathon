@@ -1,5 +1,6 @@
-"""NDTP telemetry protocol: wire codec (``protocol``) and, later, the TCP server."""
+"""NDTP telemetry: wire codec (``protocol``) and the TCP server terminals connect to (``server``)."""
 
+from .server import NdtpFix, NdtpServer, ServerStats
 from .protocol import (
     DecoderStats,
     Frame,
@@ -28,10 +29,13 @@ __all__ = [
     "Message",
     "NavCell",
     "NdtpDecodeError",
+    "NdtpFix",
+    "NdtpServer",
     "NphHeader",
     "NplHeader",
     "RawCell",
     "Realtime",
+    "ServerStats",
     "UnknownMessage",
     "crc16_modbus",
     "decode_frame",
