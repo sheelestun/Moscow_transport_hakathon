@@ -1,6 +1,22 @@
 # Moscow Transport Hackathon — оркестрация всех сервисов для локального запуска.
-# Запуск: docker compose up -d (эмулятор предварительно загрузить, см. секцию ndtp-emu).
 # Compose Specification (без устаревшего ключа `version`).
+#
+# Два бэкенда живут в одном файле:
+#   * `backend`     — стабильный mock (сборка из ./mock_backend). Поднимается всегда,
+#                     поведение ровно такое же, как до переименования папки.
+#   * `backend-dev` — новый боевой бэкенд (сборка из ./backend), work in progress.
+#                     Спрятан за профилем `dev`, поэтому обычный `up` его не трогает.
+#
+# Запуск mock-демо (как раньше, ничего дополнительно указывать не нужно):
+#   docker compose up -d
+# Mock + новый бэкенд рядом (mock на :8000, новый на :8010):
+#   docker compose --profile dev up -d
+# Только новый бэкенд с зависимостями (без mock):
+#   docker compose --profile dev up -d ml redis postgres backend-dev
+# Фронт на новый бэкенд:
+#   BACKEND_PORT=8010 docker compose --profile dev up -d
+#
+# ВНИМАНИЕ: образ эмулятора предварительно загрузить, см. секцию ndtp-emu.
 
 networks:
   # Единая сеть — все сервисы обращаются друг к другу по service-name.
@@ -10,6 +26,26 @@ networks:
 volumes:
   # Persistent-хранилище для Postgres (метаданные, логи предсказаний, справочники).
   postgres-data:
+
+# Общая часть конфигурации обоих бэкендов: не даём им разъезжаться по env-переменным.
+x-backend-common: &backend-common
+  environment: &backend-env
+    # ML доступен по service-name в общей сети `msk`.
+    ML_URL: http://ml:8001
+    ML_MODEL_VERSION: catboost-ensemble-v1
+    BACKEND_TICK_S: "1.0"
+    BACKEND_SPEED_FACTOR: "5.0"
+  depends_on:
+    ml:
+      condition: service_healthy
+  networks:
+    - msk
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+    interval: 30s
+    timeout: 5s
+    start_period: 10s
+    retries: 3
 
 services:
 
@@ -36,30 +72,35 @@ services:
     restart: unless-stopped
 
   backend:
-    # Диспетчерский шлюз: FastAPI + WebSocket, симулирует движение ТС по маршрутам
+    # Mock-диспетчер: FastAPI + WebSocket, симулирует движение ТС по маршрутам
     # и вызывает ML `/whatif/predict`. Контракт — как в `frontend/js/api.js`.
-    build: ./backend
+    # Исходники переехали в ./mock_backend, имя сервиса намеренно осталось `backend`:
+    # на него ссылаются infra/emulator-config.json (targetHost) и docs/infra.
+    <<: *backend-common
+    build: ./mock_backend
     container_name: msk-backend
     ports:
       - "8000:8000"
-    environment:
-      # ML доступен по service-name в общей сети `msk`.
-      ML_URL: http://ml:8001
-      ML_MODEL_VERSION: catboost-ensemble-v1
-      BACKEND_TICK_S: "1.0"
-      BACKEND_SPEED_FACTOR: "5.0"
-    depends_on:
-      ml:
-        condition: service_healthy
-    networks:
-      - msk
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
     restart: unless-stopped
+
+  backend-dev:
+    # Новый боевой бэкенд (./backend). WIP: пока в src/ нет main.py, контейнер
+    # будет падать на старте — это ожидаемо, поэтому он и вынесен в профиль `dev`
+    # и не является зависимостью ни для frontend, ни для ndtp-emu.
+    <<: *backend-common
+    profiles:
+      - dev
+    build: ./backend
+    container_name: msk-backend-dev
+    # Наружу — 8010, чтобы можно было держать mock и новый бэкенд одновременно.
+    ports:
+      - "${BACKEND_DEV_PORT:-8010}:8000"
+    environment:
+      <<: *backend-env
+      # Собственный алиас в логах/метриках, чтобы не путать с mock'ом.
+      BACKEND_ROLE: dev
+    # Не зацикливаем рестарты на недописанном сервисе: три попытки и стоп.
+    restart: on-failure:3
 
   frontend:
     # SPA под nginx (см. frontend/Dockerfile). Внутри контейнера слушает 80.
@@ -71,9 +112,9 @@ services:
     environment:
       MODE: live
       # Браузер обращается к бэкенду с хост-машины, а не изнутри compose-сети,
-      # поэтому localhost, а не msk-backend.
-      API_BASE: http://localhost:8000
-      WS_URL: ws://localhost:8000/ws
+      # поэтому localhost, а не msk-backend. BACKEND_PORT=8010 → смотрим на backend-dev.
+      API_BASE: http://localhost:${BACKEND_PORT:-8000}
+      WS_URL: ws://localhost:${BACKEND_PORT:-8000}/ws
     depends_on:
       - backend
     networks:

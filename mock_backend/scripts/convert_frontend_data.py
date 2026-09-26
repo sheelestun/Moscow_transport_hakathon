@@ -2,9 +2,9 @@
 
 Запускается один раз при обновлении маршрутов/светофоров Вероникой:
 
-    python backend/scripts/convert_frontend_data.py
+    python mock_backend/scripts/convert_frontend_data.py
 
-На выходе — ``backend/src/routes.json`` и ``backend/src/signals.json``,
+На выходе — ``mock_backend/src/routes.json`` и ``mock_backend/src/signals.json``,
 их читает :mod:`routes_data`. Тем самым один и тот же источник маршрутов
 для мока и live-режима — фронт и бэк не разъезжаются.
 """
@@ -17,8 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONT = ROOT / "frontend" / "js"
-OUT_ROUTES = ROOT / "backend" / "src" / "routes.json"
-OUT_SIGNALS = ROOT / "backend" / "src" / "signals.json"
+OUT_ROUTES = ROOT / "mock_backend" / "src" / "routes.json"
+OUT_SIGNALS = ROOT / "mock_backend" / "src" / "signals.json"
 
 # JS keys → нужно закавычить их для JSON.
 JS_KEYS = ("route_id", "transport_type", "name", "loop", "dirs", "osm_name", "line", "stops")
