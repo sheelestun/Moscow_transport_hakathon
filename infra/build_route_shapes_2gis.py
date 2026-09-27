@@ -25,6 +25,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -198,14 +199,48 @@ def deviation_m(seg: np.ndarray, path: np.ndarray) -> float:
     return max(project(Q, p)[0] for p in Pts) if len(Q) >= 2 else float("inf")
 
 
+def osrm_pair(cache_dir: Path, s1: np.ndarray, s2: np.ndarray, base_url: str = "https://router.project-osrm.org"
+              ) -> np.ndarray | None:
+    """Живой маршрут OSRM ровно между двумя точками ``[lat, lon]`` (не кусок из чужой линии — конкретно для этой
+    пары). Кешируем на диск: одни и те же перегоны повторяются у многих направлений/перезапусков скрипта."""
+    key = f"{s1[0]:.6f},{s1[1]:.6f}_{s2[0]:.6f},{s2[1]:.6f}"
+    f = cache_dir / f"osrm_{re.sub(r'[^0-9A-Za-z_.,-]+', '_', key)}.json"
+    if f.exists():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            f.unlink()
+            data = None
+    else:
+        data = None
+    if data is None:
+        path = f"{s1[1]:.6f},{s1[0]:.6f};{s2[1]:.6f},{s2[0]:.6f}"
+        url = f"{base_url}/route/v1/driving/{path}?overview=full&geometries=geojson"
+        try:
+            with urllib.request.urlopen(url, timeout=15) as r:
+                data = json.loads(r.read())
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print(f"  OSRM недоступен для {key}: {type(e).__name__}", flush=True)
+            data = {"code": "Unavailable"}
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(f)
+        time.sleep(0.3)  # вежливо к публичному API
+    if data.get("code") != "Ok" or not data.get("routes"):
+        return None
+    return np.array([[lat, lon] for lon, lat in data["routes"][0]["geometry"]["coordinates"]])
+
+
 def stitch(stops_ll: np.ndarray, S: np.ndarray, dgis: list[Line], osrm: Line | None,
-           gps_paths: list | None = None, max_dev_m: float = 60.0):
+           gps_paths: list | None = None, max_dev_m: float = 60.0, osrm_cache: Path | None = None):
     """Линия по перегонам между соседними остановками.
 
-    Основа — кусок маршрута 2ГИС, если обе остановки на его линии (<= 40 м); иначе кусок текущей линии OSRM без
-    «уса» (<= 2.5 прямых расстояния); иначе прямая. Если по GPS известен реальный путь автобуса на этом перегоне
-    и основа отходит от него больше чем на ``max_dev_m`` (автобус реально ехал иначе) или основы нет — берём
-    реальный путь. -> (line, доли источников).
+    Основа — кусок маршрута 2ГИС, если обе остановки на его линии (<= 40 м); если нет — живой маршрут OSRM ровно
+    между этими двумя остановками (``osrm_pair``); если и его нет (сеть недоступна) — кусок старой полной линии
+    OSRM без «уса» (<= 2.5 прямых расстояния); иначе прямая. Если по GPS известен реальный путь автобуса на этом
+    перегоне и основа отходит от него больше чем на ``max_dev_m`` (автобус реально ехал иначе) или основы нет —
+    берём реальный путь. -> (line, доли источников).
     """
     parts, src = [], []
     for i in range(len(S) - 1):
@@ -215,12 +250,16 @@ def stitch(stops_ll: np.ndarray, S: np.ndarray, dgis: list[Line], osrm: Line | N
             if seg is not None:
                 how = "2gis"
                 break
+        if seg is None and osrm_cache is not None:
+            r = osrm_pair(osrm_cache, stops_ll[i], stops_ll[i + 1])
+            if r is not None and len(r) >= 2:
+                seg, how = r, "osrm_live"
         if seg is None and osrm is not None:
             seg = osrm.segment(S[i], S[i + 1], 40, 2.5)
             if seg is not None:
                 how = "osrm"
         path = gps_paths[i] if gps_paths is not None else None
-        if path is not None and (seg is None or how == "osrm" or deviation_m(seg, path) > max_dev_m):
+        if path is not None and (seg is None or how in ("osrm", "osrm_live") or deviation_m(seg, path) > max_dev_m):
             seg, how = np.vstack([stops_ll[i], path, stops_ll[i + 1]]), "gps"
         if seg is None:
             seg = stops_ll[i:i + 2]
@@ -228,7 +267,7 @@ def stitch(stops_ll: np.ndarray, S: np.ndarray, dgis: list[Line], osrm: Line | N
         src.append(how)
     line = np.vstack(parts) if parts else stops_ll
     c = Counter(src)
-    return line, {k: round(c[k] / max(len(src), 1), 2) for k in ("2gis", "gps", "osrm", "straight")}
+    return line, {k: round(c[k] / max(len(src), 1), 2) for k in ("2gis", "gps", "osrm_live", "osrm", "straight")}
 
 
 def gps_segment_paths(tr_id: int, direction_id: int, rep_stops: list[dict], sched, cat, tg, arrivals: dict):
@@ -392,7 +431,8 @@ def main() -> None:
             row["base_how"] = base[3] if base is not None else None
             base_lines = [Line(base[0])] if base is not None and len(base[0]) >= 2 else []
             line, mix = stitch(stops_ll, S, base_lines,
-                               Line(np.array(cur)) if cur and len(cur) >= 2 else None, paths)
+                               Line(np.array(cur)) if cur and len(cur) >= 2 else None, paths,
+                               osrm_cache=args.cache.parent / "osrm")
             if True:
                 cov = stop_coverage(line, S)
                 row.update(mix=mix, stop_coverage=round(cov, 2), points=len(line))
