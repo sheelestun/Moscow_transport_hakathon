@@ -308,7 +308,7 @@ window.App = window.App || {};
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
         "line-color": COLORS.grey,
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 5],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 2.5, 17, 3.5],
         "line-opacity": 0.85,
       },
     });
@@ -317,18 +317,18 @@ window.App = window.App || {};
       id: "sel-glow", type: "line", source: "sel-line",
       filter: ["!=", ["get", "level"], "passed"],
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": byLevel(COLORS.grey), "line-width": 16, "line-blur": 10, "line-opacity": 0.45 },
+      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 5, 14, 8, 17, 10], "line-blur": 6, "line-opacity": 0.35 },
     });
     map.addLayer({
       id: "sel-passed", type: "line", source: "sel-line",
       filter: ["==", ["get", "level"], "passed"],
-      paint: { "line-color": COLORS.passed, "line-width": 3, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
+      paint: { "line-color": COLORS.passed, "line-width": 2, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
     });
     map.addLayer({
       id: "sel-line", type: "line", source: "sel-line",
       filter: ["!=", ["get", "level"], "passed"],
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 7] },
+      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 14, 3.5, 17, 4.5] },
     });
     // Светофоры: реальные места (OpenStreetMap), фазы — симуляция.
     // Значок как у настоящего светофора: тёмный корпус, горит красная или зелёная лампа.
