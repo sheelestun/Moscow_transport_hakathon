@@ -236,11 +236,6 @@ window.App = window.App || {};
 
     App.sidebar.openVehicle({
       onBack: clearSelection,
-      onAck: () => {
-        const a = alertFor(id);
-        if (a) state.acked.add(a.alert_id);
-        renderVehicle();
-      },
       canApply: !!source.applyMeasure, // «Применить» есть только в демо-симуляции
       isApplied: (routeId) => lastApplied(routeId),
       onRecEffect: (scenario) => {

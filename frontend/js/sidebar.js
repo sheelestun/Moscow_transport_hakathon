@@ -304,7 +304,6 @@ window.App = window.App || {};
           ${known && canApply && !applied ? `<button class="btn" id="apply-btn">Применить</button>` : ""}
           <button class="btn btn--ghost" id="whatif-btn">Другие меры</button>
         </div>
-        ${alert ? `<button class="link link--muted" id="ack-btn">Скрыть алерт — уже знаю</button>` : ""}
       </div>`;
   }
 
@@ -313,8 +312,6 @@ window.App = window.App || {};
     if (apply) apply.onclick = async () => { apply.disabled = true; apply.textContent = "Применяем…"; await ctx.onApply(rec); };
     const btn = $("whatif-btn");
     if (btn) btn.onclick = () => ctx.onWhatifOpen();
-    const ack = $("ack-btn");
-    if (ack) ack.onclick = ctx.onAck;
   }
 
   // Длинные маршруты (50+ остановок): по умолчанию показываем «окно» — 2 пройденные, следующие до цели прогноза и 2 после
