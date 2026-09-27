@@ -1,179 +1,87 @@
-# Moscow Transport Hackathon — оркестрация всех сервисов для локального запуска.
-# Compose Specification (без устаревшего ключа `version`).
+# Весь стек локально: ML-ядро + backend + дашборд + Postgres; эмулятор NDTP — по профилю `emulator`.
 #
-# Два бэкенда живут в одном файле:
-#   * `backend`     — стабильный mock (сборка из ./mock_backend). Поднимается всегда,
-#                     поведение ровно такое же, как до переименования папки.
-#   * `backend-dev` — новый боевой бэкенд (сборка из ./backend), work in progress.
-#                     Спрятан за профилем `dev`, поэтому обычный `up` его не трогает.
+#   docker compose up -d --build                            # стек; поток — проигрывание исторического датасета
+#   docker load -i dataset/ndtp-telemetry-emulator.tar      # один раз: образ эмулятора организаторов
+#   docker compose --profile emulator up -d                 # + эмулятор NDTP (управление на :18080)
 #
-# Запуск mock-демо (как раньше, ничего дополнительно указывать не нужно):
-#   docker compose up -d
-# Mock + новый бэкенд рядом (mock на :8000, новый на :8010):
-#   docker compose --profile dev up -d
-# Только новый бэкенд с зависимостями (без mock):
-#   docker compose --profile dev up -d ml redis postgres backend-dev
-# Фронт на новый бэкенд:
-#   BACKEND_PORT=8010 docker compose --profile dev up -d
-#
-# ВНИМАНИЕ: образ эмулятора предварительно загрузить, см. секцию ndtp-emu.
-
-networks:
-  # Единая сеть — все сервисы обращаются друг к другу по service-name.
-  msk:
-    driver: bridge
-
-volumes:
-  # Persistent-хранилище для Postgres (метаданные, логи предсказаний, справочники).
-  postgres-data:
-
-# Общая часть конфигурации обоих бэкендов: не даём им разъезжаться по env-переменным.
-x-backend-common: &backend-common
-  environment: &backend-env
-    # ML доступен по service-name в общей сети `msk`.
-    ML_URL: http://ml:8001
-    ML_MODEL_VERSION: catboost-ensemble-v1
-    BACKEND_TICK_S: "1.0"
-    BACKEND_SPEED_FACTOR: "5.0"
-  depends_on:
-    ml:
-      condition: service_healthy
-  networks:
-    - msk
-  healthcheck:
-    test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
-    interval: 30s
-    timeout: 5s
-    start_period: 10s
-    retries: 3
+# Дашборд http://localhost:3000 · Swagger backend http://localhost:8000/docs · Swagger ML http://localhost:8001/docs
+# NDTP (TCP) — localhost:9201. Тот же стек на сервере (nginx, TLS, ML наружу не открыт) — infra/deploy/.
 
 services:
 
   ml:
-    # Наш инференс-сервис: FastAPI + CatBoost-ансамбль.
+    # FastAPI + CatBoost-ансамбль. Модели — ml/artifacts (лежат в git); папка смонтирована,
+    # так что переобученные модели подхватываются через POST /reload без пересборки.
     build: ./ml
-    container_name: msk-ml
     ports:
       - "8001:8001"
     volumes:
-      # Модели монтируем read-only, чтобы можно было обновлять артефакты без rebuild.
       - ./ml/artifacts:/app/artifacts:ro
     environment:
-      ML_MODEL_VERSION: catboost-ensemble-v1
-    networks:
-      - msk
-    healthcheck:
-      # /health определён в ml/src/inference_service.py, curl уже в образе.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 15s
-      retries: 3
+      ML_MODEL_VERSION: catboost-ensemble
+      # Подсказку cur_dev_s backend считает по GPS-прибытиям — для неё обучен комплект catboost_gps_*.
+      ML_DEFAULT_CUR_DEV_MODE: gps
     restart: unless-stopped
 
   backend:
-    # Mock-диспетчер: FastAPI + WebSocket, симулирует движение ТС по маршрутам
-    # и вызывает ML `/whatif/predict`. Контракт — как в `frontend/js/api.js`.
-    # Исходники переехали в ./mock_backend, имя сервиса намеренно осталось `backend`:
-    # на него ссылаются infra/emulator-config.json (targetHost) и docs/infra.
-    <<: *backend-common
-    build: ./mock_backend
-    container_name: msk-backend
+    # Приём NDTP, сопоставление с расписанием, прогнозы через ML, алерты, REST + WebSocket.
+    # Без depends_on намеренно: без ML прогнозирует бейзлайн, без Postgres копит историю в памяти —
+    # деградирует и подхватывает их, когда они поднимутся.
+    build: ./backend
     ports:
-      - "8000:8000"
+      - "8000:8000"   # HTTP API, Swagger /docs, WebSocket /ws
+      - "9201:9201"   # NDTP-приёмник (TCP) для терминалов и эмулятора
+    environment:
+      ML_URL: http://ml:8001
+      DATABASE_URL: postgresql://msk:msk@postgres:5432/msk_transport
+      DATASET_DIR: /data
+      # Датасет — один день, 2026-01-06. По умолчанию часы стартуют с утреннего пика, чтобы на карте
+      # было движение в любое время суток. Пусто (CLOCK_START=) — текущее время суток МСК.
+      CLOCK_START: ${CLOCK_START-2026-01-06T08:00:00}
+      CLOCK_SPEED: ${CLOCK_SPEED:-1}
+    volumes:
+      # Распакованный архив организаторов (validate/traffic.csv, validate/schedule_plan.csv, ...).
+      - ${DATASET_DIR:-./dataset}:/data:ro
     restart: unless-stopped
 
-  backend-dev:
-    # Новый боевой бэкенд (./backend). WIP, поэтому вынесен в профиль `dev`
-    # и не является зависимостью ни для frontend, ни для ndtp-emu.
-    <<: *backend-common
-    profiles:
-      - dev
-    build: ./backend
-    container_name: msk-backend-dev
-    # Без ML бэкенд работает в деградированном режиме, а не ждёт его: не наследуем depends_on на ml.
-    depends_on: []
-    # Наружу — 8010, чтобы можно было держать mock и новый бэкенд одновременно.
-    # 9201 — NDTP-приёмник: сюда подключаются эмулятор и терминалы (TCP, не HTTP).
-    ports:
-      - "${BACKEND_DEV_PORT:-8010}:8000"
-      - "${NDTP_PORT:-9201}:9201"
-    environment:
-      <<: *backend-env
-      # Собственный алиас в логах/метриках, чтобы не путать с mock'ом.
-      BACKEND_ROLE: dev
-      # Датасет: реестр unit_id → tr_id и replay traffic.csv (см. backend/README.md).
-      DATASET_DIR: /data
-      # Датасетные часы: пусто = текущее время суток МСК на 2026-01-06. Для демо ночью — например
-      # CLOCK_START=2026-01-06T08:00:00, иначе после полуночи МСК часы уходят в 7 января, где данных нет.
-      CLOCK_START: ${CLOCK_START:-}
-      CLOCK_SPEED: ${CLOCK_SPEED:-1}
-      # История (телеметрия, прибытия, прогнозы, алерты). Без Postgres бэкенд работает и копит строки в памяти.
-      DATABASE_URL: postgresql://msk:msk@postgres:5432/msk_transport
-    volumes:
-      # Распакованный архив организаторов; по умолчанию ./dataset, как в LOCAL_SETUP.md.
-      - ${DATASET_HOST_DIR:-./dataset}:/data:ro
-    # Не зацикливаем рестарты на недописанном сервисе: три попытки и стоп.
-    restart: on-failure:3
-
   frontend:
-    # SPA под nginx (см. frontend/Dockerfile). Внутри контейнера слушает 80.
-    # entrypoint.sh подставит эти env-переменные в js/config.js при старте.
+    # Дашборд: статика под nginx. entrypoint.sh подставляет адреса API в config.js;
+    # браузер ходит к backend с хоста, поэтому localhost.
     build: ./frontend
-    container_name: msk-frontend
     ports:
       - "3000:80"
     environment:
       MODE: live
-      # Браузер обращается к бэкенду с хост-машины, а не изнутри compose-сети,
-      # поэтому localhost, а не msk-backend. BACKEND_PORT=8010 → смотрим на backend-dev.
-      API_BASE: http://localhost:${BACKEND_PORT:-8000}
-      WS_URL: ws://localhost:${BACKEND_PORT:-8000}/ws
-    depends_on:
-      - backend
-    networks:
-      - msk
-    restart: unless-stopped
-
-  redis:
-    # Шина realtime-событий + feature-store с TTL.
-    image: redis:7-alpine
-    container_name: msk-redis
-    # Порт наружу не пробрасываем — только внутри сети msk.
-    expose:
-      - "6379"
-    networks:
-      - msk
+      API_BASE: http://localhost:8000
+      WS_URL: ws://localhost:8000/ws
     restart: unless-stopped
 
   postgres:
-    # Метаданные, история предсказаний, справочники маршрутов/остановок.
+    # История: телеметрия, прибытия, прогнозы, алерты. Наружу не публикуется.
     image: postgres:16-alpine
-    container_name: msk-postgres
     environment:
       POSTGRES_USER: msk
       POSTGRES_PASSWORD: msk
       POSTGRES_DB: msk_transport
-    ports:
-      - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - msk
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U msk -d msk_transport"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
-  # ВНИМАНИЕ: перед первым запуском загрузить образ эмулятора командой:
-  #   docker load -i dataset/ndtp-telemetry-emulator.tar
-  # Образ поставляется как OCI-архив, в Docker Hub его нет.
   ndtp-emu:
-    # Java Spring Boot — эмулирует поток NDTP-телеметрии по TCP на targetHost:targetPort.
+    # Эмулятор NDTP от организаторов (Java). Образа нет в Docker Hub — сначала `docker load`, см. выше.
+    # Куда и что слать, задаётся через POST /api/config: infra/emulator_replay.py (реальные треки)
+    # или infra/emulator-config.json (случайное блуждание).
     image: ndtp-telemetry-emulator:1.0
-    container_name: msk-ndtp-emu
+    profiles:
+      - emulator
     ports:
-      # HTTP-управление: POST /api/config, GET /api/cells.
       - "18080:18080"
-    depends_on:
-      - backend
-    networks:
-      - msk
     restart: unless-stopped
+
+volumes:
+  pgdata:

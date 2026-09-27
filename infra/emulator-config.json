@@ -1,6 +1,6 @@
 {
   "targetHost": "backend",
-  "targetPort": 5555,
+  "targetPort": 9201,
   "units": [
     {
       "unitId": 664030,

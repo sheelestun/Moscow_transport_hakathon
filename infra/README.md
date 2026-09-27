@@ -8,7 +8,7 @@
 
 Шаблон конфигурации для NDTP-эмулятора (`ndtp-telemetry-emulator:1.0`). Задаёт, куда слать NDTP-пакеты и какие единицы транспорта симулировать.
 
-Применить (эмулятор поднят через `docker compose up ndtp-emu`):
+Применить (эмулятор поднят через `docker compose --profile emulator up -d`):
 
 ```bash
 curl -X POST http://localhost:18080/api/config \
