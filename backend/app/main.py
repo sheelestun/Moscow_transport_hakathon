@@ -19,11 +19,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import health, ingest, state as state_api
+from .api import health, ingest, predictions, state as state_api
 from .clock import DatasetClock
 from .config import Settings
 from .ingest import Ingest, ReplaySource, Traffic, load_traffic
 from .ndtp import NdtpFix, NdtpServer
+from .predict import MlClient, Predictor
 from .state import Fleet, VehicleSchedule, load_schedule
 
 VERSION = "0.1.0"
@@ -51,6 +52,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state.ingest.subscribe(state.fleet.on_ping)
         tasks: list[asyncio.Task] = [_background(state.fleet.run(settings.state_tick_s), "fleet")]
 
+        ml = MlClient(settings.ml_url, timeout_s=settings.ml_timeout_s)
+        state.predictor = Predictor(state.fleet, state.clock, ml, max_ping_age_s=settings.predict_max_ping_age_s,
+                                    retry_s=settings.predict_retry_s)
+        tasks.append(_background(state.predictor.run(settings.predict_tick_s), "predictor"))
+
         state.ndtp = None
         if settings.ndtp_enabled:
             fixes: asyncio.Queue[NdtpFix] = asyncio.Queue(maxsize=settings.ingest_queue_size)
@@ -75,6 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.gather(*tasks, return_exceptions=True)
             if state.ndtp is not None:
                 await state.ndtp.stop()
+            await ml.aclose()
 
     app = FastAPI(
         title="mowtransit backend",
@@ -87,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(ingest.router)
     app.include_router(state_api.router)
+    app.include_router(predictions.router)
     return app
 
 

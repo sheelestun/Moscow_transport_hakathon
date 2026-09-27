@@ -52,6 +52,18 @@ class StateStatus(BaseModel):
     update_ms_max: float | None = None
 
 
+class PredictorStatus(BaseModel):
+    ml_url: str
+    ml_available: bool | None = Field(description="None until the first call")
+    last_error: str | None = None
+    predictions_ml: int
+    predictions_fallback: int = Field(description="baseline forecasts made while ML was unavailable")
+    vehicles_with_prediction: int
+    horizon_ok_share: float | None = Field(None, description="share of forecasts with the target 10–15 min ahead")
+    ml_batch_ms_p50: float | None = None
+    ml_batch_ms_p95: float | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     issues: list[str]
@@ -62,6 +74,7 @@ class HealthResponse(BaseModel):
     ingest: IngestStatus
     replay: ReplayStatus
     state: StateStatus
+    predictor: PredictorStatus
 
 
 class ClockResponse(BaseModel):
@@ -89,6 +102,10 @@ def health(request: Request) -> HealthResponse:
         if not ndtp.listening:
             issues.append("NDTP listener is not listening")
 
+    pred = state.predictor.snapshot()
+    if pred["ml_available"] is False:
+        issues.append(f"ML service unavailable, forecasts fall back to the current deviation: {pred['last_error']}")
+
     ing = state.ingest.snapshot()
     newest = max((p.received_at for p in state.ingest.latest.values()), default=None)
     replay = ReplayStatus(enabled=state.replay is not None)
@@ -107,6 +124,12 @@ def health(request: Request) -> HealthResponse:
                             last_ping_age_s=None if newest is None else round(now - newest, 1)),
         replay=replay,
         state=StateStatus(**state.fleet.snapshot()),
+        predictor=PredictorStatus(ml_url=pred["ml_url"], ml_available=pred["ml_available"],
+                                  last_error=pred["last_error"], predictions_ml=pred["stats"]["predictions_ml"],
+                                  predictions_fallback=pred["stats"]["predictions_fallback"],
+                                  vehicles_with_prediction=pred["vehicles_with_prediction"],
+                                  horizon_ok_share=pred["horizon_ok_share"], ml_batch_ms_p50=pred["ml_batch_ms_p50"],
+                                  ml_batch_ms_p95=pred["ml_batch_ms_p95"]),
     )
 
 

@@ -15,7 +15,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def client(**overrides) -> TestClient:
-    settings = {"ndtp_host": "127.0.0.1", "ndtp_port": 0, "dataset_dir": FIXTURES / "dataset", **overrides}
+    # Pinned clock (the fixture's pings are 08:00–08:04, so 12:00 replays nothing) and an ML URL that refuses
+    # connections: tests must not depend on the time of day or on a running ML service.
+    settings = {"ndtp_host": "127.0.0.1", "ndtp_port": 0, "dataset_dir": FIXTURES / "dataset",
+                "clock_start": "2026-01-06T12:00:00", "ml_url": "http://127.0.0.1:9", **overrides}
     return TestClient(create_app(Settings(_env_file=None, **settings)))
 
 
@@ -99,3 +102,16 @@ def test_state_derives_deviation_segment_speed_and_dwell() -> None:
     assert d["segment_speed_kmh"] == 3.8                            # 125 m between А and Б in 120 s
     assert body["vehicles"]["116057"]["has_schedule"] is False
     assert [a["name"] for a in arrivals] == ["Остановка А", "Остановка Б"]
+
+
+def test_forecast_falls_back_to_baseline_when_ml_is_down() -> None:
+    with client(clock_start="2026-01-06T08:05:00", state_tick_s=0.05, predict_tick_s=0.05) as c:
+        wait_for(lambda: c.get("/health").json()["predictor"]["predictions_fallback"] >= 1)
+        h = c.get("/health").json()
+        body = c.get("/predictions").json()
+    assert h["status"] == "degraded" and any("ML service unavailable" in i for i in h["issues"])
+    assert h["predictor"]["ml_available"] is False and h["predictor"]["horizon_ok_share"] == 1.0
+    p = body["vehicles"]["115106"]
+    assert (p["source"], p["target_name"], p["horizon_ok"]) == ("fallback", "Остановка В, обратный рейс", True)
+    assert 600 < p["lead_s"] <= 900                                  # T is a few ms past 08:05, target 08:20
+    assert p["delay_pred_s"] == p["cur_dev_s"] == 0.0 and p["data_status"] == "fallback"

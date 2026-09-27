@@ -49,3 +49,10 @@ class Settings(BaseSettings):
 
     # Vehicle state
     state_tick_s: float = Field(default=2.0, description="how often arrivals/derived features are recomputed")
+
+    # Predictions (ML service: ml/src/inference_service.py)
+    ml_url: str = "http://ml:8001"
+    ml_timeout_s: float = 10.0
+    predict_tick_s: float = Field(default=5.0, description="how often vehicles are checked for a new target stop")
+    predict_retry_s: float = Field(default=30.0, description="after an ML failure, forecasts use the baseline this long")
+    predict_max_ping_age_s: float = Field(default=900.0, description="vehicles silent longer are treated as not in service")

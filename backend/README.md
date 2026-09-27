@@ -14,7 +14,7 @@ Built piece by piece; each piece is tested before the next starts.
 | 3 | Service shell: `main.py`, config, `/health`, Swagger | done |
 | 4 | Dataset clock, normalized pings (unit → vehicle), replay source, NDTP/replay arbitration | done |
 | 5 | State: schedule index, per-vehicle buffers, arrival detection → current deviation, segment speed, dwell | done |
-| 6 | ML client + predictor (target stop in (T+10, T+15] min, `/predict/batch`) | |
+| 6 | ML client + predictor (target stop in (T+10, T+15] min, `/predict/batch`) | done |
 | 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | |
 | 8 | Postgres history | |
 | 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | |
@@ -31,6 +31,7 @@ app/
     health.py     GET /health (short status), GET /clock
     ingest.py     GET /ingest/ndtp (listener), GET /ingest/vehicles (latest ping per vehicle + source)
     state.py      GET /state/vehicles (derived features), GET /state/vehicles/{tr_id}/arrivals
+    predictions.py  GET /predictions (latest per vehicle), GET /predictions/recent
   ndtp/
     protocol.py   NDTP wire codec: framing, CRC-16/MODBUS, handshake + G6CellNav00 decoding
     server.py     asyncio TCP server terminals connect to; emits NdtpFix onto a queue
@@ -45,6 +46,10 @@ app/
     arrivals.py   GPS arrival detection — a port of ml/src/features/tabular.gps_history, same constants
     fleet.py      per-vehicle ping buffers, arrivals log, derived features; recomputes only vehicles with new pings
     geo.py        distance / time helpers (same formulas as ML)
+  predict/
+    client.py     HTTP client for the ML service
+    payload.py    vehicle state → ML PredictRequest (telemetry window + the vehicle's whole day plan)
+    predictor.py  target stop 10–15 min ahead, one forecast per target, ML-down fallback + retry
 scripts/
   ndtp_loadtest.py  load test for NDTP ingest (see below)
 tests/
@@ -109,6 +114,23 @@ Measured on the real validate day (2026-09-27):
   arrival can be *after* T, and includes manually-filled stops — neither is knowable from GPS at T. Online
   predictions therefore start from a less precise `cur_dev_s` than the model was trained on; a model
   variant anchored on the GPS deviation would close this gap (ML team's call).
+
+## Forecasts (criterion 2)
+
+Every `PREDICT_TICK_S` (5 s) the predictor picks, per vehicle in service, the first planned stop in
+**(T + 10 min, T + 15 min]** — the dataset's own definition — and asks the ML service
+(`ML_URL`, `POST /predict/batch`). One forecast per (vehicle, target stop): as time moves the target rolls
+forward, so each vehicle gets a fresh forecast every 1–3 minutes, always 10–15 minutes before the stop.
+`GET /health` reports the share of forecasts inside the horizon (`horizon_ok_share`) and ML latency.
+
+If ML is unreachable the backend forecasts the baseline itself (delay = current deviation, the contract's
+risk sigmoid), marked `source: fallback`, reports `degraded`, and retries ML after `PREDICT_RETRY_S`.
+
+Checked against a locally trained model (2026-09-27): with the organizers' `cur_dev_s` substituted,
+backend-built payloads reproduce the batch `submission.csv` within 0.1 s on 104/151 validate points (mean
+gap 1.6 s). The rest is inside the ML service — its online feature path isn't byte-identical to the batch
+pipeline; its own reference payloads (`src/csv_replayer.py`) differ from the batch too. Live on the real
+day: 100% of forecasts inside the horizon, ~21 ms per forecast in batches.
 
 ## NDTP ingest performance
 
