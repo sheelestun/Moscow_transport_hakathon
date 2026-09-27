@@ -128,8 +128,8 @@ window.App = window.App || {};
         if (!m) {
           const el = document.createElement("button");
           el.className = "veh" + (v.is_reserve ? " veh--reserve" : "");
-          el.setAttribute("aria-label", `ТС ${v.vehicle_id}, маршрут ${v.route_id}`);
-          el.innerHTML = `<span>${v.is_reserve ? "Р" : App.esc(v.route_id)}</span>`;
+          el.setAttribute("aria-label", `ТС ${v.vehicle_id}, маршрут ${App.routeLabel(v.route_id)}`);
+          el.innerHTML = `<span>${v.is_reserve ? "Р" : App.esc(App.routeLabel(v.route_id))}</span>`;
           if (v.is_reserve) el.title = "Резервное ТС";
           el.addEventListener("click", (ev) => { ev.stopPropagation(); handlers.onVehicle && handlers.onVehicle(v.vehicle_id); });
           el.addEventListener("mouseenter", () => showPopup(v.vehicle_id));
@@ -393,7 +393,7 @@ window.App = window.App || {};
     const reason = v.reason_pattern ? `<div class="pop__reason">${App.esc(App.labels.t("reasons", v.reason_pattern))}</div>` : "";
     const wait = v.waiting_signal ? `<div class="pop__wait">Стоит на красном · ${v.waiting_signal.waited_sec} с</div>` : "";
     popup.setLngLat(m.marker.getLngLat()).setHTML(
-      `<div class="pop"><div class="pop__head"><span class="route-chip">${App.esc(v.route_id)}</span> ТС ${App.esc(v.vehicle_id)}</div>
+      `<div class="pop"><div class="pop__head"><span class="route-chip">${App.esc(App.routeLabel(v.route_id))}</span> ТС ${App.esc(v.vehicle_id)}</div>
        <div class="pop__row">сейчас <b>${App.fmtDelayShort(v.delay_now_sec)}</b> · через 10–15 мин <b class="t-${level}">${App.fmtDelayShort(v.delay_pred_sec)}</b></div>
        ${wait}${reason}<div class="pop__hint">нажмите, чтобы открыть</div></div>`
     ).addTo(map);

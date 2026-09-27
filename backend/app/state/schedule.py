@@ -73,14 +73,15 @@ class VehicleSchedule:
 
 
 def _load_stop_names() -> dict[tuple[float, float], str]:
-    """OSM-derived names for stops the dataset left blank. Key is (lat, lon) rounded to 5dp.
-    Built once by ``infra/build_stop_names.py`` from Overpass; missing file → no fallback."""
+    """Real stop names. Key is (lat, lon) rounded to 5dp.
+    Built by ``infra/build_route_shapes_2gis.py`` from the 2GIS stops of each vehicle's route (on top of the
+    OSM names from ``infra/build_stop_names.py``); missing file → building addresses from the dataset."""
     if not STOP_NAMES.exists():
         return {}
     try:
-        raw = json.loads(STOP_NAMES.read_text())
+        raw = json.loads(STOP_NAMES.read_text(encoding="utf-8"))
         out = {tuple(float(x) for x in k.split(",")): v for k, v in raw.items()}
-        log.info("stop_names.json: %d названий подтянуто из OSM", len(out))
+        log.info("stop_names.json: %d названий остановок (2ГИС / OSM)", len(out))
         return out
     except (OSError, ValueError) as e:
         log.warning("stop_names.json unreadable (%s) — leaving unnamed stops as-is", e)
@@ -112,7 +113,8 @@ def load_schedule(path: Path) -> dict[int, VehicleSchedule]:
             if m is None:
                 raise ValueError(f"{path}: bad geom {r['geom']!r} for tt_action_item_id {r['tt_action_item_id']}")
             lon, lat = float(m[1]), float(m[2])
-            name = r["building_address"] or stop_names.get((round(lat, 5), round(lon, 5)), "")
+            # настоящее название остановки (2ГИС / OSM) важнее адреса дома из датасета
+            name = stop_names.get((round(lat, 5), round(lon, 5))) or r["building_address"] or ""
             visits.append(StopVisit(pos=pos, stop_id=int(r["tt_action_item_id"]), plan=plan, lon=lon, lat=lat,
                                     manual_fill=r["manual_fill"] == "True", name=name, geom=r["geom"],
                                     trip=trip, idx_in_trip=idx))

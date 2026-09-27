@@ -129,6 +129,10 @@ App.pct = function (x) {
 };
 
 // Защита от HTML-инъекций при вставке текста в innerHTML
+// Подпись маршрута для «фишки»: настоящий номер из 2ГИС (route_number), если backend его прислал, иначе route_id.
+// app.js переопределяет её, когда загружены маршруты; здесь — безопасное значение по умолчанию.
+App.routeLabel = App.routeLabel || function (routeId) { return routeId; };
+
 App.esc = function (s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 };

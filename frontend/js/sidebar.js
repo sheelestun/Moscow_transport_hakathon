@@ -33,7 +33,7 @@ window.App = window.App || {};
           <button class="alert alert--${level} ${a._fresh ? "is-fresh" : ""}" data-vid="${App.esc(a.vehicle_id)}">
             <span class="alert__delay">${App.fmtDelayShort(a.delay_pred_sec)}</span>
             <span class="alert__body">
-              <span class="alert__top"><span class="route-chip">${App.esc(a.route_id)}</span> ТС ${App.esc(a.vehicle_id)}</span>
+              <span class="alert__top"><span class="route-chip">${App.esc(App.routeLabel(a.route_id))}</span> ТС ${App.esc(a.vehicle_id)}</span>
               <span class="alert__where">к «${App.esc(a.target_stop_name || a.target_stop_id)}» · ${App.fmtIn(a.eta_incident)}</span>
               <span class="alert__reason">${t("reasons", a.reason_pattern)}</span>
             </span>
@@ -49,7 +49,7 @@ window.App = window.App || {};
         <li>
           <button class="route" data-id="${App.esc(r.route_id)}">
             <span class="dot dot--${r.level}"></span>
-            <span class="route-chip">${App.esc(r.route_id)}</span>
+            <span class="route-chip">${App.esc(App.routeLabel(r.route_id))}</span>
             <span class="route__name">${App.esc(r.name)}</span>
             <span class="route__stat">${r.red ? `<b class="t-red">${r.red}</b>` : ""}${r.yellow ? `<b class="t-yellow">${r.yellow}</b>` : ""}<span>${r.total} ТС</span></span>
           </button>
@@ -94,7 +94,7 @@ window.App = window.App || {};
       $("vh-hero").innerHTML = `
         <div class="hero hero--${level}">
           <div class="hero__top">
-            <span class="route-chip route-chip--lg">${App.esc(v.route_id)}</span>
+            <span class="route-chip route-chip--lg">${App.esc(App.routeLabel(v.route_id))}</span>
             <div class="hero__title">
               <b>ТС ${App.esc(v.vehicle_id)}</b>
               <span class="muted">${App.esc(schedule ? schedule.direction : route ? route.name : "")}</span>
