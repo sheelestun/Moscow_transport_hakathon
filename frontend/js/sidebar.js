@@ -83,7 +83,7 @@ window.App = window.App || {};
     },
 
     // Вызывается каждую секунду: обновить цифры
-    updateVehicle({ vehicle: v, route, alert, schedule, whatif }) {
+    updateVehicle({ vehicle: v, route, alert, schedule, whatif, hours }) {
       if (!this._ctx || !v) return;
       const level = App.riskLevel(v.risk_score);
       const target = schedule && schedule.stops.find((s) => s.is_target);
@@ -100,12 +100,14 @@ window.App = window.App || {};
               <span class="muted">${App.esc(schedule ? schedule.direction : route ? route.name : "")}</span>
             </div>
             <span class="level level--${level}">${App.levelName[level]}</span>
+            ${sourceBadgeHtml(v.source)}
           </div>
           ${dataStatusHtml(v.data_status)}
           <div class="hero__label">Прогноз через 10–15 минут</div>
           <div class="hero__big">${App.fmtDelay(v.delay_pred_sec)}${intervalHtml(v.delay_interval_sec, v.delay_pred_sec)}</div>
           ${probabilitiesHtml(v)}
           ${whereName ? `<div class="hero__where">к остановке «${App.esc(whereName)}» · ${App.fmtTime(whereTime)} (${App.fmtIn(whereTime)})</div>` : ""}
+          ${hoursHtml(hours)}
           ${problemHtml(schedule, level)}
           ${v.waiting_signal && v.waiting_signal.waited_sec >= 2 ? `<div class="waiting"><span class="sig-ico"><i class="r"></i><i class="g"></i></span>
             <span>Сейчас стоит на красном светофоре <b>${v.waiting_signal.waited_sec} с</b> · зелёный через ${v.waiting_signal.left_sec} с</span></div>` : ""}
@@ -159,6 +161,27 @@ window.App = window.App || {};
       $("vh-sched").innerHTML = schedule ? scheduleHtml(schedule) : `<h4>Расписание</h4><p class="muted">Загружаем…</p>`;
     },
   };
+
+  // Откуда пришёл последний фикс: живая NDTP-телеметрия vs replay из датасета.
+  // Мок ничего не шлёт → рендерим только когда source явно задан бэкендом.
+  const SOURCE_BADGE = {
+    ndtp: { cls: "live", text: "LIVE", title: "Живая NDTP-телеметрия" },
+    replay: { cls: "replay", text: "REPLAY", title: "Проигрывание traffic.csv из датасета" },
+  };
+  function sourceBadgeHtml(src) {
+    const b = SOURCE_BADGE[src];
+    if (!b) return "";
+    return `<span class="src-badge src-badge--${b.cls}" title="${b.title}">${b.text}</span>`;
+  }
+
+  // Часы работы маршрута из /routes/{id}/hours — план первого и последнего рейса.
+  // Полезно ночью: сразу видно, что маршрут не «пропал», а просто уже кончился (или ещё не начался).
+  function hoursHtml(h) {
+    if (!h || !h.first_hhmm || !h.last_hhmm) return "";
+    const nextIn = h.next_departure ? App.fmtIn(h.next_departure) : null;
+    const suffix = nextIn ? ` · след. рейс ${nextIn}` : " · сегодня рейсов больше нет";
+    return `<div class="hero__hours">Часы работы: <b>${App.esc(h.first_hhmm)}–${App.esc(h.last_hhmm)}</b>${suffix}</div>`;
+  }
 
   // Бейдж качества данных: скрываем при "live" (тишина = ОК), выделяем прочие статусы
   const DATA_STATUS = {

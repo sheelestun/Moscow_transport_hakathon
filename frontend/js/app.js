@@ -13,6 +13,7 @@ window.App = window.App || {};
     alerts: new Map(),   // alert_id -> alert
     acked: new Set(),    // алерты, которые диспетчер отметил «Принято»
     whatif: new Map(),   // vehicle_id -> последний результат What-if
+    routeHours: new Map(),// route_id -> {first_hhmm, last_hhmm, next_departure, ...} (кэш, /routes/{id}/hours)
     selectedId: null,    // выбранное ТС
     selectedToken: 0,    // растёт при каждой смене selectedId — ловим устаревшие ответы fetch
     schedule: null,      // расписание выбранного ТС
@@ -205,7 +206,19 @@ window.App = window.App || {};
       alert: alertFor(v.vehicle_id),
       schedule: state.schedule,
       whatif: state.whatif.get(v.vehicle_id),
+      hours: state.routeHours.get(v.route_id),
     });
+  }
+
+  // Кэш «часов работы» маршрута: дёргаем /routes/{id}/hours однажды при выборе ТС и запоминаем.
+  // Отсутствие endpoint'а (мок / старый бэкенд) — молча пропускаем.
+  async function loadRouteHours(routeId) {
+    if (!source.getRouteHours || state.routeHours.has(routeId)) return;
+    state.routeHours.set(routeId, null); // маркер «уже запросили», чтобы не дублировать
+    try {
+      const h = await source.getRouteHours(routeId);
+      if (h) state.routeHours.set(routeId, h);
+    } catch { /* тихо */ }
   }
 
   // ---------- Выбор ТС ----------
@@ -247,6 +260,7 @@ window.App = window.App || {};
     });
     renderVehicle();
     App.map.focusRoute(route, v);
+    loadRouteHours(v.route_id).then(() => renderVehicle());
     await refreshSchedule();
   }
 

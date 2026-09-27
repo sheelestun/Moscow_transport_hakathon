@@ -34,6 +34,10 @@ window.App = window.App || {};
         try { return await get(`/routes/${encodeURIComponent(route_id)}/signals`); }
         catch { return []; }
       },
+      async getRouteHours(route_id) {
+        try { return await get(`/routes/${encodeURIComponent(route_id)}/hours`); }
+        catch { return null; }
+      },
       async whatif(body) {
         const r = await fetch(base + "/whatif", {
           method: "POST",

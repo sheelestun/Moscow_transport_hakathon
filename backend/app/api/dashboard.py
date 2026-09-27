@@ -10,6 +10,8 @@ from pydantic import BaseModel
 
 from ..predict import MlUnavailable
 from ..predict.predictor import RISK_RED
+from ..state.geo import epoch_s
+from .timefmt import wall_iso
 from .views import schedule_payload, vehicle_payload, worst_stops
 
 router = APIRouter(tags=["dashboard"])
@@ -79,6 +81,36 @@ def metrics_worst_stops(request: Request, limit: int = Query(10, ge=1, le=50)) -
 def route_signals(route_id: str) -> list[dict]:
     """Always empty: the dataset has no traffic-light data (the dashboard's signal layer is a mock-mode feature)."""
     return []
+
+
+@router.get("/routes/{route_id}/hours")
+def route_hours(request: Request, route_id: str) -> dict:
+    """First and last planned visit of the route's day — so the UI can tell "line runs 5:38–00:47".
+
+    Route id is the vehicle id (see views.py), so hours are just the plan bounds of that vehicle's schedule.
+    ``next_departure`` is the closest future visit relative to the dataset clock, or None after the last run.
+    """
+    state = request.app.state
+    try:
+        tr_id = int(route_id)
+    except ValueError:
+        raise HTTPException(404, f"unknown route {route_id}")
+    s = state.fleet.schedules.get(tr_id)
+    if s is None or not s.visits:
+        raise HTTPException(404, f"no schedule for route {route_id}")
+    first, last = s.visits[0], s.visits[-1]
+    now = state.clock.now()
+    i = s.first_after(int(epoch_s(now))) if now >= first.plan else 0
+    next_dep = s.visits[i].plan if i is not None and i < len(s.visits) else None
+    return {
+        "route_id": route_id,
+        "first_plan": wall_iso(state.clock, first.plan),
+        "last_plan": wall_iso(state.clock, last.plan),
+        "first_hhmm": first.plan.strftime("%H:%M"),
+        "last_hhmm": last.plan.strftime("%H:%M"),
+        "next_departure": wall_iso(state.clock, next_dep) if next_dep is not None else None,
+        "trips": max(v.trip for v in s.visits) + 1,
+    }
 
 
 @router.get("/metrics/bunching")

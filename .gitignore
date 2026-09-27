@@ -228,3 +228,6 @@ __marimo__/
 # Артефакты обучения (чекпоинты моделей) — большие и воспроизводимые, в git не храним
 /ml/artifacts/
 .DS_Store
+
+# Local compose override (dataset paths, ports, CLOCK_START). Contains machine-specific paths.
+docker-compose.override.yml

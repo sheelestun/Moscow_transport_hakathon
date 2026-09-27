@@ -205,6 +205,13 @@ button { font: inherit; color: inherit; }
 .level--yellow { background: rgba(255,176,32,.16); color: var(--yellow); }
 .level--green { background: rgba(47,210,122,.16); color: var(--green); }
 
+.src-badge { margin-left: 6px; padding: 2px 7px; border-radius: 4px; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .05em; vertical-align: middle; }
+.src-badge--live { background: rgba(47,210,122,.14); color: var(--green); border: 1px solid rgba(47,210,122,.4); }
+.src-badge--replay { background: rgba(155,170,190,.10); color: var(--muted); border: 1px solid rgba(155,170,190,.3); }
+
+.hero__hours { margin-top: 8px; font-size: 14px; color: var(--muted); }
+.hero__hours b { font-family: var(--mono); color: #d6dbe4; font-weight: 500; }
+
 .block h4 { font-size: 14px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
 .why__title { font-size: 18.5px; font-weight: 600; }
 .why__text { margin-top: 4px; color: #c3cddc; font-size: 16px; }
