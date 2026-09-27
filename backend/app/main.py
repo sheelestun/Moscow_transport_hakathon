@@ -20,9 +20,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .alerts import AlertEngine
-from .api import alerts, health, ingest, predictions, state as state_api
+from .api import alerts, health, history, ingest, predictions, state as state_api
 from .clock import DatasetClock
 from .config import Settings
+from .db import History
 from .ingest import Ingest, ReplaySource, Traffic, load_traffic
 from .ndtp import NdtpFix, NdtpServer
 from .predict import MlClient, Predictor
@@ -58,9 +59,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     retry_s=settings.predict_retry_s)
         tasks.append(_background(state.predictor.run(settings.predict_tick_s), "predictor"))
 
-        state.alerts = AlertEngine(state.fleet, state.clock, risk_threshold=settings.alert_risk_threshold)
+        state.alerts = AlertEngine(state.fleet, state.clock, risk_threshold=settings.alert_risk_threshold,
+                                   id_prefix=f"a-{_base36(int(state.started_at))}")
         state.predictor.on_prediction(state.alerts.on_prediction)
         tasks.append(_background(state.alerts.run(settings.alert_tick_s), "alerts"))
+
+        state.history = None
+        if settings.database_url:
+            state.history = History(settings.database_url, schedules, flush_s=settings.history_flush_s)
+            state.ingest.subscribe(state.history.ping)
+            state.fleet.on_arrivals(state.history.arrivals)
+            state.predictor.on_prediction(state.history.prediction)
+            state.alerts.on_event(state.history.alert)
+            tasks.append(_background(state.history.run(), "history"))
 
         state.ndtp = None
         if settings.ndtp_enabled:
@@ -84,6 +95,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if state.history is not None:
+                await state.history.close()
             if state.ndtp is not None:
                 await state.ndtp.stop()
             await ml.aclose()
@@ -101,6 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(state_api.router)
     app.include_router(predictions.router)
     app.include_router(alerts.router)
+    app.include_router(history.router)
     return app
 
 
@@ -126,6 +140,15 @@ async def _load_schedule(settings: Settings, issues: list[str]) -> dict[int, Veh
     except (OSError, ValueError, KeyError) as e:
         issues.append(f"cannot load {path}: {type(e).__name__}: {e} — no arrivals, deviations or predictions")
         return {}
+
+
+def _base36(n: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while n:
+        n, r = divmod(n, 36)
+        out = digits[r] + out
+    return out or "0"
 
 
 def _background(coro: Coroutine, name: str) -> asyncio.Task:

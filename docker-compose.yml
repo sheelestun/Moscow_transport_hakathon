@@ -108,6 +108,8 @@ services:
       # CLOCK_START=2026-01-06T08:00:00, иначе после полуночи МСК часы уходят в 7 января, где данных нет.
       CLOCK_START: ${CLOCK_START:-}
       CLOCK_SPEED: ${CLOCK_SPEED:-1}
+      # История (телеметрия, прибытия, прогнозы, алерты). Без Postgres бэкенд работает и копит строки в памяти.
+      DATABASE_URL: postgresql://msk:msk@postgres:5432/msk_transport
     volumes:
       # Распакованный архив организаторов; по умолчанию ./dataset, как в LOCAL_SETUP.md.
       - ${DATASET_HOST_DIR:-./dataset}:/data:ro

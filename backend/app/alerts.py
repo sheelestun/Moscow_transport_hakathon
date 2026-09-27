@@ -64,7 +64,8 @@ class AlertStats:
 
 class AlertEngine:
     def __init__(self, fleet: Fleet, clock: DatasetClock, *, risk_threshold: float = 0.7,
-                 verify_grace_s: float = WIN_LATE_S + 120, wall: Callable[[], float] = time.time) -> None:
+                 verify_grace_s: float = WIN_LATE_S + 120, id_prefix: str = "a",
+                 wall: Callable[[], float] = time.time) -> None:
         self.fleet = fleet
         self.clock = clock
         self.risk_threshold = risk_threshold
@@ -72,6 +73,7 @@ class AlertEngine:
         self.stats = AlertStats()
         self.active: dict[int, Alert] = {}          # tr_id → its active alert
         self.closed: deque[Alert] = deque(maxlen=1000)
+        self.id_prefix = id_prefix              # unique per run, so ids don't collide in the history table
         self._ids = itertools.count(1)
         self._listeners: list[Callable[[Event, Alert], None]] = []
         self._wall = wall
@@ -90,7 +92,7 @@ class AlertEngine:
         v = self.fleet.vehicles.get(p.tr_id)
         s = v.schedule if v else None
         last = v.derived.last_arrival if v and v.derived else None
-        alert = Alert(alert_id=f"a-{next(self._ids)}", tr_id=p.tr_id, prediction=p,
+        alert = Alert(alert_id=f"{self.id_prefix}-{next(self._ids)}", tr_id=p.tr_id, prediction=p,
                       segment_from=s.visits[last.pos].label if s and last else None,
                       segment_to=s.visits[p.target_pos].label if s else None, created_at=self._wall())
         self.active[p.tr_id] = alert

@@ -60,3 +60,7 @@ class Settings(BaseSettings):
     # Alerts
     alert_risk_threshold: float = Field(default=0.7, description="P(> 2 min late) that raises an alert (dashboard red)")
     alert_tick_s: float = Field(default=5.0, description="how often active alerts are checked against arrivals")
+
+    # History (Postgres); unset = history off
+    database_url: str | None = Field(default=None, description="e.g. postgresql://msk:msk@postgres:5432/msk_transport")
+    history_flush_s: float = 1.0

@@ -16,7 +16,7 @@ Built piece by piece; each piece is tested before the next starts.
 | 5 | State: schedule index, per-vehicle buffers, arrival detection → current deviation, segment speed, dwell | done |
 | 6 | ML client + predictor (target stop in (T+10, T+15] min, `/predict/batch`) | done |
 | 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | done |
-| 8 | Postgres history | |
+| 8 | Postgres history | done |
 | 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | |
 | 10 | Deploy: nginx vhosts (`api.` / `app.` / `docs.` mowtransit.ru), TLS, compose | |
 
@@ -34,6 +34,7 @@ app/
     predictions.py  GET /predictions (latest per vehicle), GET /predictions/recent
     alerts.py     GET /alerts?active=true|false — dashboard alert payloads
     timefmt.py    dataset time → wall-clock ISO for everything user-facing
+    history.py    GET /history/summary, GET /history/alerts (from Postgres: survives restarts)
   ndtp/
     protocol.py   NDTP wire codec: framing, CRC-16/MODBUS, handshake + G6CellNav00 decoding
     server.py     asyncio TCP server terminals connect to; emits NdtpFix onto a queue
@@ -53,6 +54,9 @@ app/
     payload.py    vehicle state → ML PredictRequest (telemetry window + the vehicle's whole day plan)
     predictor.py  target stop 10–15 min ahead, one forecast per target, ML-down fallback + retry
   alerts.py       red forecasts → alerts (one per vehicle), verified against the detected arrival
+  db/
+    schema.sql    telemetry, arrivals, predictions, alerts (applied idempotently at startup)
+    history.py    write-behind writer: batches, COPY for append-only tables, upserts, buffering while Postgres is down
 scripts/
   ndtp_loadtest.py  load test for NDTP ingest (see below)
 tests/
@@ -97,7 +101,8 @@ python infra/emulator_replay.py --dataset <dataset> --emu-url http://localhost:1
 Vehicles on live NDTP override the replay; if their feed stops for `NDTP_FRESH_S` (60 s), replay takes
 over again (`GET /ingest/vehicles` shows each vehicle's source).
 
-Tests: `pytest backend/tests` from the repo root (`pytest.ini` puts `backend/` on the path).
+Tests: `pytest backend/tests` from the repo root (`pytest.ini` puts `backend/` on the path). The Postgres
+test runs when `TEST_DATABASE_URL` is set (see `tests/test_history.py`), otherwise it's skipped.
 
 ## Derived features (criterion 3)
 
@@ -148,6 +153,15 @@ within the detection window → `resolved`.
 
 Live run on the real day (dataset 14:55–15:29 at ×10, locally trained model): 170 forecasts, 100% in the
 horizon; 4 alerts, 3 verified, all 3 hits (actual delays 253–278 s), forecast error 58 s.
+
+## History
+
+With `DATABASE_URL` set, telemetry, detected arrivals, every forecast (with the full ML response) and alerts
+(with their outcome) go to Postgres. The pipeline only enqueues rows; a background task flushes them every
+second (`COPY` for telemetry and forecasts, upserts for arrivals and alerts), so the database can't slow the
+live path. If Postgres goes down the service keeps working, buffers rows in memory (capped; oldest dropped
+and counted), reports `degraded`, and catches up after reconnecting — checked live by stopping and
+restarting Postgres mid-run: nothing lost.
 
 ## NDTP ingest performance
 

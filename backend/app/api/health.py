@@ -72,6 +72,15 @@ class AlertsStatus(BaseModel):
     mae_verified_s: float | None = Field(None, description="|forecast − actual delay| over verified alerts")
 
 
+class HistoryStatus(BaseModel):
+    enabled: bool
+    connected: bool | None = None
+    last_error: str | None = None
+    written: dict[str, int] = Field(default_factory=dict)
+    pending: dict[str, int] = Field(default_factory=dict, description="rows buffered, not yet in Postgres")
+    dropped: int = 0
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     issues: list[str]
@@ -84,6 +93,7 @@ class HealthResponse(BaseModel):
     state: StateStatus
     predictor: PredictorStatus
     alerts: AlertsStatus
+    history: HistoryStatus
 
 
 class ClockResponse(BaseModel):
@@ -110,6 +120,14 @@ def health(request: Request) -> HealthResponse:
                           queue_depth=snap["sink_queue_depth"])
         if not ndtp.listening:
             issues.append("NDTP listener is not listening")
+
+    history = HistoryStatus(enabled=state.history is not None)
+    if state.history is not None:
+        h = state.history.snapshot()
+        history = HistoryStatus(enabled=True, connected=h["connected"], last_error=h["last_error"],
+                                written=h["stats"]["written"], pending=h["pending"], dropped=h["stats"]["dropped"])
+        if h["connected"] is False:
+            issues.append(f"Postgres unavailable, history is buffered in memory: {h['last_error']}")
 
     pred = state.predictor.snapshot()
     if pred["ml_available"] is False:
@@ -140,6 +158,7 @@ def health(request: Request) -> HealthResponse:
                                   horizon_ok_share=pred["horizon_ok_share"], ml_batch_ms_p50=pred["ml_batch_ms_p50"],
                                   ml_batch_ms_p95=pred["ml_batch_ms_p95"]),
         alerts=_alerts_status(state.alerts.snapshot()),
+        history=history,
     )
 
 
