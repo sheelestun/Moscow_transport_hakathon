@@ -15,8 +15,10 @@ App.labels = {
     release_reserve: "Выпустить резервное ТС",
     adjust_interval: "Скорректировать интервалы на маршруте",
     detour: "Предложить объезд проблемного участка",
-    hold_at_stop: "Придержать следующее ТС на остановке",
+    hold_at_stop: "Придержать на остановке автобус, который его догоняет",
     signal_priority: "Дать приоритет на светофорах",
+    short_turn: "Развернуть раньше конечной и встать в график обратно",
+    express: "Пустить экспрессом: проехать несколько остановок без посадки",
   },
   // Синхронизировано с ml/configs/feature_labels_ml.json (FEATURES из ml/src/features/tabular.py).
   features: {
@@ -117,12 +119,24 @@ App.labels = {
     trolleybus: "Троллейбусы",
     tram: "Трамваи",
   },
+  // К кому применяется мера
+  scope: {
+    short_turn: "только этот автобус",
+    express: "только этот автобус",
+    detour: "только этот автобус",
+    hold_at_stop: "автобус, который догоняет этот",
+    signal_priority: "опаздывающие автобусы маршрута",
+    add_reserve: "весь маршрут",
+    adjust_interval: "весь маршрут",
+  },
   scenarios: {
     add_reserve: "Выпустить резервное ТС",
     adjust_interval: "Скорректировать интервалы",
-    detour: "Пустить в объезд",
+    detour: "Объезд затора",
     signal_priority: "Приоритет на светофорах",
-    hold_at_stop: "Придержать на остановке",
+    hold_at_stop: "Придержать догоняющий",
+    short_turn: "Развернуть раньше конечной",
+    express: "Пустить экспрессом",
   },
 
   // Перевод кода в текст; если перевода нет — показываем код как есть
@@ -165,12 +179,23 @@ App.fmtDelay = function (sec) {
   return `${sign}${m} мин ${String(r).padStart(2, "0")} с`;
 };
 
-// Короткий вариант: 187 -> "+3:07"
+// Короткий вариант в минутах, чтобы не путать с часами: 187 -> "+3 мин", 45 -> "+45 с", -130 -> "−2 мин"
+// (как в западных диспетчерских системах: отклонение от графика — в целых минутах)
 App.fmtDelayShort = function (sec) {
   if (sec == null || isNaN(sec)) return "—";
   const sign = sec > 0 ? "+" : sec < 0 ? "−" : "";
   const s = Math.round(Math.abs(sec));
-  return `${sign}${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  if (s < 60) return `${sign}${s} с`;
+  return `${sign}${Math.round(s / 60)} мин`;
+};
+
+// Отклонение словами: «опаздывает на 7 мин» / «по графику» / «раньше графика на 2 мин»
+App.fmtDelayWords = function (sec, future) {
+  if (sec == null || isNaN(sec)) return "";
+  const m = Math.round(Math.abs(sec) / 60);
+  if (Math.abs(sec) < 60) return future ? "будет идти по графику" : "идёт по графику";
+  if (sec > 0) return `${future ? "будет опаздывать" : "опаздывает"} на ${m} мин`;
+  return `${future ? "будет идти" : "идёт"} раньше графика на ${m} мин`;
 };
 
 // Время по Москве: "14:47"
@@ -203,4 +228,16 @@ App.routeLabel = App.routeLabel || function (routeId) { return routeId; };
 
 App.esc = function (s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+};
+
+// Эффект меры для конкретного автобуса и для маршрута (из ответа what-if)
+App.measureEffect = function (res, vehicleId) {
+  const me = (res.vehicles || []).find((x) => x.vehicle_id === vehicleId);
+  return {
+    before: me ? me.delay_before_sec : null,
+    after: me ? me.delay_after_sec : null,
+    gain: me ? me.delay_before_sec - me.delay_after_sec : 0,
+    redBefore: res.summary.red_before,
+    redAfter: res.summary.red_after,
+  };
 };
