@@ -145,7 +145,7 @@ window.App = window.App || {};
         $("vh-why").hidden = level === "green";
         // Как в западных диспетчерских: причина одной строкой. Разбор модели (веса признаков) —
         // свёрнут: диспетчеру он не нужен для решения, но его можно показать жюри.
-        $("vh-why").innerHTML = level === "green" ? "" : `<p class="why__line"><span class="muted">Причина:</span> <b>${t("reasons", reason)}</b></p>
+        $("vh-why").innerHTML = level === "green" ? "" : `<h4>Причина</h4><p class="why__cause">${t("reasons", reason)}</p>
              ${feats.length ? `<details class="why__more"><summary>Как модель это поняла</summary>
                <p class="why__text">${t("explanations", reason)}</p>
                <div class="feats">${featBars(feats.slice(0, 3))}</div></details>` : ""}`;
@@ -296,29 +296,21 @@ window.App = window.App || {};
     let effect = "";
     const done = applied.length ? `<div class="rec__done">✓ Применено: ${applied.map((x) =>
       `${App.esc(App.labels.scenarios[x.scenario])} (${App.fmtTime(new Date(x.at))})`).join(", ")}</div>` : "";
-    if (recDone) {
-      effect = "";
-    } else if (known && !eff) {
-      effect = `<div class="rec__effect rec__effect--loading">Считаем эффект…</div>`;
-    } else if (eff) {
-      // Эффект для ЭТОГО автобуса и сколько опаздывающих останется на маршруте
+    // Эффект — выигрыш во времени для ЭТОГО автобуса, в «таблетке» рядом с названием меры
+    let pill = "";
+    if (!recDone && known && !eff) {
+      pill = `<span class="rec__pill rec__pill--wait">считаем…</span>`;
+    } else if (!recDone && eff) {
       const e = App.measureEffect(eff, vid);
-      const lv = (x) => App.delayLevel(x);
-      // Мера уменьшает опоздание (в первую очередь прогноз «через 10–15 мин», понемногу и текущее).
-      // Показываем только выигрыш: «было/станет» видно в плашках «Сейчас» и «Через 10–15 мин» после применения.
       const g = Math.abs(e.gain);
-      effect = `
-        <div class="rec__effect rec__effect--one">
-          <div>
-            <span class="rec__num ${e.gain > 0 ? "t-green" : e.gain < 0 ? "t-red" : "muted"}">${e.gain === 0 ? "не поможет" : (e.gain > 0 ? "−" : "+") + (g < 60 ? `${Math.round(g)} с` : `${Math.round(g / 60)} мин`)}</span>
-          </div>
-        </div>
-        ${e.redAfter < e.redBefore ? `<p class="rec__more">И на маршруте станет меньше опаздывающих автобусов: ${e.redBefore} → ${e.redAfter}</p>` : ""}`;
+      const txt = e.gain === 0 ? "не поможет" : (e.gain > 0 ? "−" : "+") + (g < 60 ? `${Math.round(g)} с` : `${Math.round(g / 60)} мин`);
+      pill = `<span class="rec__pill rec__pill--${e.gain > 0 ? "good" : e.gain < 0 ? "bad" : "none"}" title="На столько изменится опоздание этого автобуса">${txt}</span>`;
+      if (e.redAfter < e.redBefore) effect = `<p class="rec__more">На маршруте опаздывающих станет ${e.redBefore} → ${e.redAfter}</p>`;
     }
     return `
       <div class="block block--rec">
         <h4>Рекомендация</h4>
-        <p class="rec">${t("recommendations", rec)}</p>
+        <div class="rec__row"><p class="rec">${t("recommendations", rec)}</p>${pill}</div>
         ${done}
         ${effect}
         <div class="row">

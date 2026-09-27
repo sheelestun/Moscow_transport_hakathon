@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css" />
-  <link rel="stylesheet" href="css/styles.css?v=2026092805" />
+  <link rel="stylesheet" href="css/styles.css?v=2026092804" />
   <!-- Аналитика посещений и записи сессий (stat.mowtransit.ru) -->
   <script defer src="https://stat.mowtransit.ru/script.js" data-website-id="33c60042-1de3-4c38-a51e-14147f4b76a2"></script>
   <script defer src="https://stat.mowtransit.ru/recorder.js" data-website-id="33c60042-1de3-4c38-a51e-14147f4b76a2"></script>
@@ -41,11 +41,10 @@
   </header>
 
   <!-- ШКАЛА «СЛЕДУЮЩИЕ 15 МИНУТ»: будущие инциденты на оси времени -->
-  <section class="horizon" aria-label="Инциденты в ближайшие 15 минут">
+  <section class="horizon" aria-label="Кто сильнее опоздает через 10–15 минут">
     <div class="horizon__title">
-      <b>Ближайшие 15 минут</b>
-      <span class="horizon__hint">кто и когда опоздает</span>
-      <span id="horizon-count"></span>
+      <b>Прогноз опоздания</b>
+      <span id="horizon-count" hidden></span>
     </div>
     <div class="horizon__track" id="horizon"></div>
     <span class="horizon__summary" id="horizon-summary"></span>
@@ -165,18 +164,18 @@
 
   <!-- Наш код. Порядок важен: каждый файл использует предыдущие.
        ?v=… — версия: меняйте её после правок, чтобы браузер не брал старые файлы из кэша. -->
-  <script src="js/config.js?v=2026092805"></script>
-  <script src="js/labels.js?v=2026092805"></script>
-  <script src="js/geo.js?v=2026092805"></script>
-  <script src="js/mock-routes.js?v=2026092805"></script>
-  <script src="js/mock-signals.js?v=2026092805"></script>
-  <script src="js/hourly-stats.js?v=2026092805"></script>
-  <script src="js/mock.js?v=2026092805"></script>
-  <script src="js/api.js?v=2026092805"></script>
-  <script src="js/basemap.js?v=2026092805"></script>
-  <script src="js/map.js?v=2026092805"></script>
-  <script src="js/sidebar.js?v=2026092805"></script>
-  <script src="js/whatif.js?v=2026092805"></script>
-  <script src="js/app.js?v=2026092805"></script>
+  <script src="js/config.js?v=2026092804"></script>
+  <script src="js/labels.js?v=2026092804"></script>
+  <script src="js/geo.js?v=2026092804"></script>
+  <script src="js/mock-routes.js?v=2026092804"></script>
+  <script src="js/mock-signals.js?v=2026092804"></script>
+  <script src="js/hourly-stats.js?v=2026092804"></script>
+  <script src="js/mock.js?v=2026092804"></script>
+  <script src="js/api.js?v=2026092804"></script>
+  <script src="js/basemap.js?v=2026092804"></script>
+  <script src="js/map.js?v=2026092804"></script>
+  <script src="js/sidebar.js?v=2026092804"></script>
+  <script src="js/whatif.js?v=2026092804"></script>
+  <script src="js/app.js?v=2026092804"></script>
 </body>
 </html>

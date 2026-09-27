@@ -346,89 +346,44 @@ window.App = window.App || {};
     },
   };
 
-  // ---------- Шкала «ближайшие 15 минут» ----------
-  const HORIZON_MIN = 15;
-  const hzItems = new Map(); // alert_id -> элемент (переиспользуем, чтобы не терялись клики)
+  // ---------- Полоса «Через 10–15 минут»: столбики, кто сильнее опоздает ----------
+  // Слева направо — от самого большого прогноза опоздания к меньшему. Высота столбика — опоздание.
+  // Берём все ТС видимых линий с прогнозом опоздания от 1 минуты (жёлтые и красные).
+  const HZ_MIN_DELAY = 60;
   function renderHorizon() {
     const track = $("horizon");
-    if (!track.querySelector(".hz-axis")) {
-      let html = `<div class="hz-axis"></div>`;
-      for (let m = 0; m <= HORIZON_MIN; m += 5) {
-        html += `<span class="hz-tick" style="left:${(m / HORIZON_MIN) * 100}%">${m === 0 ? "сейчас" : "+" + m + " мин"}</span>`;
-      }
-      html += `<span class="hz-empty" hidden>Инцидентов в ближайшие 15 минут не ожидается</span>`;
-      track.insertAdjacentHTML("beforeend", html);
-    }
-    const now = App.now();
-    const items = activeAlerts()
-      .map((a) => ({ a, min: (new Date(a.eta_incident).getTime() - now) / 60000 }))
-      .filter((x) => x.min >= -0.5 && x.min <= HORIZON_MIN + 0.5)
-      .sort((x, y) => x.min - y.min);
-    track.querySelector(".hz-empty").hidden = items.length > 0;
-    $("horizon-count").textContent = items.length ? `${items.length} ${plural(items.length, "инцидент", "инцидента", "инцидентов")}` : "";
+    const vs = visibleVehicles()
+      .filter((v) => v.delay_pred_sec >= HZ_MIN_DELAY)
+      .sort((a, b) => b.delay_pred_sec - a.delay_pred_sec);
+    const red = vs.filter((v) => App.riskLevel(v.risk_score) === "red").length;
+    $("horizon-count").textContent = red ? `${red} ${plural(red, "опоздает", "опоздают", "опоздают")} сильно` : "";
     // Строка для свёрнутого вида
-    const first = items.find((x) => x.min >= 0);
-    $("horizon-summary").innerHTML = !items.length
-      ? `<span class="t-green">инцидентов не ожидается</span>`
-      : `<b class="t-red">${items.length} ${plural(items.length, "инцидент", "инцидента", "инцидентов")}</b>` +
-        (first ? ` · ближайший через <b>${Math.max(0, Math.round(first.min))} мин</b>: <b>${App.esc(App.routeLabel(first.a.route_id))}</b> ${App.fmtDelayShort(first.a.delay_pred_sec)} к «${App.esc(first.a.target_stop_name || first.a.target_stop_id)}»` : "");
-    if (document.body.classList.contains("hz-collapsed")) return; // в свёрнутом виде точки не раскладываем
+    const top = vs[0];
+    $("horizon-summary").innerHTML = !vs.length
+      ? `<span class="t-green">все по графику</span>`
+      : `<b class="t-${App.riskLevel(top.risk_score)}">${App.esc(App.routeLabel(top.route_id))} · ТС ${App.esc(top.vehicle_id)} ${App.fmtDelayShort(top.delay_pred_sec)}</b>` +
+        (vs.length > 1 ? ` · ещё ${vs.length - 1} с опозданием` : "");
+    if (document.body.classList.contains("hz-collapsed")) return;
 
-    // создаём / обновляем элементы
-    const alive = new Set();
-    for (const { a, min } of items) {
-      alive.add(a.alert_id);
-      let el = hzItems.get(a.alert_id);
-      if (!el) {
-        el = document.createElement("div");
-        el.className = "hz-item";
-        el.innerHTML = `<button class="hz-chip">
-          <span class="hz-chip__top"><span class="hz-chip__route"></span><span class="hz-chip__delay"></span></span>
-          <span class="hz-chip__bottom"></span>
-        </button><i class="hz-stem"></i><i class="hz-dot"></i>`;
-        el.querySelector(".hz-chip").onclick = () => selectVehicle(a.vehicle_id);
-        track.appendChild(el);
-        hzItems.set(a.alert_id, el);
-      }
-      const level = App.riskLevel(a.risk_score);
-      el.dataset.level = level;
-      el.classList.toggle("is-selected", a.vehicle_id === state.selectedId);
-      const chip = el.querySelector(".hz-chip");
-      const minRounded = Math.max(0, Math.round(min));
-      const whenLabel = minRounded === 0 ? "сейчас" : `через ${minRounded} ${plural(minRounded, "минуту", "минуты", "минут")}`;
-      const stopLabel = a.target_stop_name || `остановка ${a.target_stop_id}`;
-      chip.querySelector(".hz-chip__route").textContent = App.routeLabel(a.route_id);
-      chip.querySelector(".hz-chip__delay").textContent = `опоздает ${App.fmtDelayShort(a.delay_pred_sec)}`;
-      chip.querySelector(".hz-chip__bottom").innerHTML = `<b>${App.esc(whenLabel)}</b> · ${App.esc(stopLabel)}`;
-      chip.title = `ТС ${a.vehicle_id}, маршрут ${a.route_id}: ${whenLabel} у «${stopLabel}», прогноз опоздания ${App.fmtDelay(a.delay_pred_sec)}`;
-      el._min = min;
+    if (!vs.length) {
+      track.innerHTML = `<div class="hzb-empty">Все по графику — опозданий через 10–15 минут не ожидается</div>`;
+      return;
     }
-    for (const [id, el] of hzItems) if (!alive.has(id)) { el.remove(); hzItems.delete(id); }
-
-    // раскладка по «этажам», чтобы карточки не налезали друг на друга
-    const W = track.clientWidth;
-    const LANES = 2, LANE_H = 42, GAP = 8;
-    const axisY = track.clientHeight - 22;
-    const ends = new Array(LANES).fill(-Infinity);
-    for (const { a } of items) {
-      const el = hzItems.get(a.alert_id);
-      const chip = el.querySelector(".hz-chip");
-      const x = Math.max(0, Math.min(1, el._min / HORIZON_MIN)) * W;
-      const w = chip.offsetWidth;
-      const chipH = chip.offsetHeight || 40;
-      const left = Math.max(0, Math.min(W - w, x - w / 2));
-      let lane = ends.findIndex((e) => left > e + GAP);
-      if (lane < 0) lane = ends.indexOf(Math.min(...ends));
-      ends[lane] = left + w;
-      const top = 4 + lane * LANE_H;
-      el.style.left = x + "px";
-      chip.style.left = left - x + "px";
-      chip.style.top = top + "px";
-      const stem = el.querySelector(".hz-stem");
-      stem.style.top = top + chipH + "px";
-      stem.style.height = Math.max(0, axisY - top - chipH - 4) + "px";
-      el.querySelector(".hz-dot").style.top = axisY - 6 + "px";
-    }
+    // сколько столбиков влезает по ширине
+    const fit = Math.max(3, Math.floor(track.clientWidth / 92));
+    const shown = vs.slice(0, fit);
+    const max = Math.max(600, shown[0].delay_pred_sec); // шкала — минимум до 10 минут
+    track.innerHTML = `<div class="hzb">${shown.map((v) => {
+      const level = App.riskLevel(v.risk_score);
+      const h = Math.max(6, Math.round((v.delay_pred_sec / max) * 100));
+      return `<button class="hzb__col hzb__col--${level} ${v.vehicle_id === state.selectedId ? "is-selected" : ""}" data-vid="${App.esc(v.vehicle_id)}"
+          title="${App.esc(App.routeLabel(v.route_id))}, ТС ${App.esc(v.vehicle_id)}: через 10–15 мин опоздает на ${App.fmtDelayShort(v.delay_pred_sec)} (сейчас ${App.fmtDelayShort(v.delay_now_sec)})">
+          <span class="hzb__val">${App.fmtDelayShort(v.delay_pred_sec)}</span>
+          <span class="hzb__bar"><i style="height:${h}%"></i></span>
+          <span class="hzb__lab"><b>${App.esc(App.routeLabel(v.route_id))}</b> ${App.esc(String(v.vehicle_id).slice(-4))}</span>
+        </button>`;
+    }).join("")}${vs.length > shown.length ? `<span class="hzb__more">ещё ${vs.length - shown.length}</span>` : ""}</div>`;
+    track.querySelectorAll("[data-vid]").forEach((b) => (b.onclick = () => selectVehicle(b.dataset.vid)));
   }
   const plural = (n, one, few, many) =>
     n % 10 === 1 && n % 100 !== 11 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many;

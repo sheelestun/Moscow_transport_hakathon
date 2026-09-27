@@ -6,7 +6,7 @@ window.App = window.App || {};
   const $ = (id) => document.getElementById(id);
   let ctx = null;       // {source, vehicle, route, alert, rec, onApplied}
   let results = [];     // [{scenario, res}]
-  let chosen = null;    // выбранная мера
+  let chosen = new Set(); // выбранные меры (можно несколько)
   let lastFocus = null;
 
   App.whatif = {
@@ -15,7 +15,7 @@ window.App = window.App || {};
     async open(c) {
       ctx = c;
       results = [];
-      chosen = null;
+      chosen = new Set();
       lastFocus = document.activeElement;
       const modal = $("whatif-modal");
       modal.hidden = false;
@@ -38,7 +38,7 @@ window.App = window.App || {};
         results = all;
         const best = bestOf(all);
         const recDone = (c.applied || []).some((x) => x.scenario === c.rec);
-        chosen = !recDone && all.some((r) => r.scenario === c.rec) ? c.rec : best;
+        chosen = new Set([!recDone && all.some((r) => r.scenario === c.rec) ? c.rec : best]);
         render();
       } catch (e) {
         $("wi-body").innerHTML = `<p class="error">Не удалось рассчитать: ${App.esc(e.message)}. Проверьте связь с сервером и откройте окно ещё раз.</p>`;
@@ -79,41 +79,79 @@ window.App = window.App || {};
           : (scenario === best ? `<span class="tag tag--best">лучший</span>` : "") +
             (scenario === ctx.rec ? `<span class="tag">советует модель</span>` : "");
         return `
-        <button class="wi-opt ${scenario === chosen ? "is-chosen" : ""}" data-sc="${scenario}" role="radio" aria-checked="${scenario === chosen}">
-          <span class="wi-opt__name">${App.esc(App.labels.scenarios[scenario])}${tags}<small class="wi-opt__scope">${App.esc(App.labels.scope[scenario] || "")}</small></span>
+        <button class="wi-opt ${chosen.has(scenario) ? "is-chosen" : ""} ${done ? "is-done" : ""}" data-sc="${scenario}" role="checkbox" aria-checked="${chosen.has(scenario)}" ${done ? "disabled" : ""}>
+          <span class="wi-opt__name"><i class="wi-check" aria-hidden="true">${chosen.has(scenario) || done ? "✓" : ""}</i>${App.esc(App.labels.scenarios[scenario])}${tags}<small class="wi-opt__scope">${App.esc(App.labels.scope[scenario] || "")}</small></span>
           <span class="wi-opt__gain ${done ? "muted" : gain > 0 ? "t-green" : gain < 0 ? "t-red" : "muted"}">${done ? "✓" : gain === 0 ? "не поможет" : (gain > 0 ? "−" : "+") + App.fmtDelayShort(Math.abs(gain)).replace(/^[+−]/, "")}</span>
           <span class="wi-opt__bar" title="Чем длиннее, тем сильнее эффект"><i style="width:${Math.max(2, (Math.max(0, gain) / maxGain) * 100)}%"></i></span>
           <span class="wi-opt__red">на маршруте опаздывают <b>${s.red_before} → ${s.red_after}</b></span>
         </button>`;
       }).join("");
 
-    const cur = results.find((r) => r.scenario === chosen).res;
+    // Несколько мер сразу: эффекты складываются (для каждого автобуса суммируем выигрыши)
+    const sel = results.filter((r) => chosen.has(r.scenario));
+    const combo = combine(sel);
+    const me = combo.vehicles.find((x) => x.vehicle_id === vid);
+    const myGain = me ? me.delay_before_sec - me.delay_after_sec : 0;
+    const names = sel.map((r) => `«${App.esc(App.labels.scenarios[r.scenario])}»`).join(" + ");
     $("wi-body").innerHTML = `
       <div class="wi-now">
         <div><span class="muted small">Сейчас на маршруте</span><b>${App.fmtDelayShort(s0.avg_delay_before_sec)}</b><span class="muted small">среднее опоздание</span></div>
         <div><span class="muted small">Опаздывают</span><b class="${s0.red_before ? "t-red" : ""}">${s0.red_before} из ${total}</b><span class="muted small">автобусов</span></div>
       </div>
-      ${(ctx.applied || []).length ? `<p class="wi-note">Уже применено: ${ctx.applied.map((x) => App.esc(App.labels.scenarios[x.scenario])).join(", ")}. Цифры ниже — что добавит ещё одна мера поверх них.</p>` : ""}
-      <h4>Сколько каждая мера сэкономит этому автобусу</h4>
-      <div class="wi-opts" role="radiogroup" aria-label="Меры">${rows}</div>
-      <h4>Выбрано «${App.esc(App.labels.scenarios[chosen])}» — по автобусам</h4>
-      ${cur.note ? `<p class="wi-note">${App.esc(cur.note)}</p>` : ""}
-      ${vehiclesHtml(cur)}`;
+      ${(ctx.applied || []).length ? `<p class="wi-note">Уже применено: ${ctx.applied.map((x) => App.esc(App.labels.scenarios[x.scenario])).join(", ")}. Цифры ниже — что добавит ещё мера поверх них.</p>` : ""}
+      <h4>Отметьте одну или несколько мер</h4>
+      <div class="wi-opts" role="group" aria-label="Меры">${rows}</div>
+      ${sel.length ? `
+      <div class="wi-combo">
+        <div class="wi-combo__title">${sel.length > 1 ? `Вместе: ${names}` : names}</div>
+        <div class="wi-combo__nums">
+          <span>этому автобусу <b class="${myGain > 0 ? "t-green" : myGain < 0 ? "t-red" : ""}">${myGain === 0 ? "0" : (myGain > 0 ? "−" : "+") + App.fmtDelayShort(Math.abs(myGain)).replace(/^[+−]/, "")}</b></span>
+          <span>опаздывают на маршруте <b>${combo.redBefore} → ${combo.redAfter}</b></span>
+        </div>
+      </div>
+      ${sel.map((r) => r.res.note ? `<p class="wi-note">${App.esc(r.res.note)}</p>` : "").join("")}
+      <h4>По автобусам</h4>
+      ${vehiclesHtml(combo)}` : `<p class="muted">Ничего не выбрано.</p>`}`;
 
-    $("wi-body").querySelectorAll("[data-sc]").forEach((b) => (b.onclick = () => { chosen = b.dataset.sc; render(); }));
+    $("wi-body").querySelectorAll("[data-sc]").forEach((b) => (b.onclick = () => {
+      const sc = b.dataset.sc;
+      chosen.has(sc) ? chosen.delete(sc) : chosen.add(sc);
+      render();
+    }));
 
     const apply = $("wi-apply");
     if (ctx.source.applyMeasure) {
-      const done = (ctx.applied || []).some((x) => x.scenario === chosen);
       apply.hidden = false;
-      apply.disabled = done;
-      apply.textContent = done ? "Уже применено" : "Применить эту меру";
+      apply.disabled = !sel.length;
+      apply.textContent = sel.length > 1 ? `Применить ${sel.length} ${sel.length < 5 ? "меры" : "мер"}` : sel.length ? "Применить эту меру" : "Выберите меру";
       apply.onclick = async () => {
         apply.disabled = true;
-        await ctx.onApply(chosen);
+        for (const r of sel) await ctx.onApply(r.scenario); // по очереди, эффекты складываются
         App.whatif.close();
       };
     }
+  }
+
+  // Суммарный эффект нескольких мер: для каждого ТС складываем выигрыши;
+  // опаздывающему мера не делает «раньше графика» — ниже нуля не опускаем
+  function combine(sel) {
+    const base = results[0].res;
+    const vehicles = base.vehicles.map((v0) => {
+      let gain = 0;
+      for (const r of sel) {
+        const v = r.res.vehicles.find((x) => x.vehicle_id === v0.vehicle_id);
+        if (v) gain += v.delay_before_sec - v.delay_after_sec;
+      }
+      let after = v0.delay_before_sec - gain;
+      if (v0.delay_before_sec > 0 && after < 0) after = 0;
+      return { vehicle_id: v0.vehicle_id, delay_before_sec: v0.delay_before_sec, delay_after_sec: Math.round(after) };
+    });
+    const red = (sec) => App.delayLevel(sec) === "red";
+    return {
+      vehicles,
+      redBefore: base.summary.red_before,
+      redAfter: sel.length ? vehicles.filter((v) => red(v.delay_after_sec)).length : base.summary.red_before,
+    };
   }
 
   function vehiclesHtml(w) {
