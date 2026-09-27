@@ -13,7 +13,7 @@ Built piece by piece; each piece is tested before the next starts.
 | 2 | NDTP TCP server + load test | done |
 | 3 | Service shell: `main.py`, config, `/health`, Swagger | done |
 | 4 | Dataset clock, normalized pings (unit → vehicle), replay source, NDTP/replay arbitration | done |
-| 5 | State: schedule index, per-vehicle buffers, arrival detection → current deviation, segment speed, dwell | |
+| 5 | State: schedule index, per-vehicle buffers, arrival detection → current deviation, segment speed, dwell | done |
 | 6 | ML client + predictor (target stop in (T+10, T+15] min, `/predict/batch`) | |
 | 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | |
 | 8 | Postgres history | |
@@ -30,6 +30,7 @@ app/
   api/
     health.py     GET /health (short status), GET /clock
     ingest.py     GET /ingest/ndtp (listener), GET /ingest/vehicles (latest ping per vehicle + source)
+    state.py      GET /state/vehicles (derived features), GET /state/vehicles/{tr_id}/arrivals
   ndtp/
     protocol.py   NDTP wire codec: framing, CRC-16/MODBUS, handshake + G6CellNav00 decoding
     server.py     asyncio TCP server terminals connect to; emits NdtpFix onto a queue
@@ -39,6 +40,11 @@ app/
     dataset.py    traffic.csv loader: unit → vehicle registry + pings for replay
     pipeline.py   NdtpFix / replayed row → Ping; per-vehicle NDTP/replay arbitration
     replay.py     plays traffic.csv as the clock passes (backfills the last hour on start)
+  state/
+    schedule.py   schedule_plan.csv → each vehicle's planned stop visits, trips (gap > 5 min = terminal)
+    arrivals.py   GPS arrival detection — a port of ml/src/features/tabular.gps_history, same constants
+    fleet.py      per-vehicle ping buffers, arrivals log, derived features; recomputes only vehicles with new pings
+    geo.py        distance / time helpers (same formulas as ML)
 scripts/
   ndtp_loadtest.py  load test for NDTP ingest (see below)
 tests/
@@ -84,6 +90,25 @@ Vehicles on live NDTP override the replay; if their feed stops for `NDTP_FRESH_S
 over again (`GET /ingest/vehicles` shows each vehicle's source).
 
 Tests: `pytest backend/tests` from the repo root (`pytest.ini` puts `backend/` on the path).
+
+## Derived features (criterion 3)
+
+`app/state` matches telemetry to the planned schedule and derives, per vehicle: **current deviation**
+(delay at the latest GPS-detected arrival — `cur_dev_s` for the model), **segment speed** (distance along
+the plan / time between the last two arrivals of a trip) and **dwell** (time within 60 m of the last stop).
+See `GET /state/vehicles`.
+
+Measured on the real validate day (2026-09-27):
+
+- **Parity with ML**: arrivals are identical to `ml/src/features/tabular.gps_history` — 1,560 vehicle×moment
+  checks, 23,664 arrivals, 0 mismatches — so the model sees the arrivals it was trained on.
+- **Arrival accuracy**: 4,100 detected arrivals vs the actual arrival facts in `test/schedule.csv` (same day,
+  same telemetry): median error 3 s, 95% within 30 s, bias −2 s.
+- **`cur_dev_s` online vs the organizers' value**: median 45 s apart (mean 79 s) at the 151 validate points.
+  The organizers' `cur_dev_s` is the delay at the last stop *planned* ≤ T (97% exact match), whose actual
+  arrival can be *after* T, and includes manually-filled stops — neither is knowable from GPS at T. Online
+  predictions therefore start from a less precise `cur_dev_s` than the model was trained on; a model
+  variant anchored on the GPS deviation would close this gap (ML team's call).
 
 ## NDTP ingest performance
 

@@ -43,6 +43,15 @@ class ReplayStatus(BaseModel):
     total: int = 0
 
 
+class StateStatus(BaseModel):
+    vehicles: int
+    with_schedule: int
+    with_deviation: int = Field(description="vehicles with a current deviation from the schedule")
+    arrivals_detected: int
+    update_ms_p50: float | None = None
+    update_ms_max: float | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     issues: list[str]
@@ -52,6 +61,7 @@ class HealthResponse(BaseModel):
     ndtp: NdtpStatus
     ingest: IngestStatus
     replay: ReplayStatus
+    state: StateStatus
 
 
 class ClockResponse(BaseModel):
@@ -96,6 +106,7 @@ def health(request: Request) -> HealthResponse:
                             registry_units=ing["registry_units"], unknown_units=len(state.ingest.unknown_units),
                             last_ping_age_s=None if newest is None else round(now - newest, 1)),
         replay=replay,
+        state=StateStatus(**state.fleet.snapshot()),
     )
 
 

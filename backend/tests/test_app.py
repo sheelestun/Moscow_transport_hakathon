@@ -84,3 +84,18 @@ def test_ndtp_can_be_disabled() -> None:
         h = c.get("/health").json()
         assert h["status"] == "ok" and h["ndtp"]["enabled"] is False
         assert c.get("/ingest/ndtp").json() == {"enabled": False}
+
+
+def test_state_derives_deviation_segment_speed_and_dwell() -> None:
+    with client(clock_start="2026-01-06T08:05:00", state_tick_s=0.05) as c:
+        wait_for(lambda: c.get("/health").json()["state"]["with_deviation"] == 1)
+        h = c.get("/health").json()["state"]
+        body = c.get("/state/vehicles").json()
+        arrivals = c.get("/state/vehicles/115106/arrivals").json()
+        assert c.get("/state/vehicles/116057/arrivals").status_code == 404   # has no schedule
+    assert (h["vehicles"], h["with_schedule"], h["arrivals_detected"]) == (2, 1, 2)
+    d = body["vehicles"]["115106"]["derived"]
+    assert (d["last_stop"]["name"], d["cur_dev_s"], d["next_stop"]["name"]) == ("Остановка Б", 0.0, "Остановка В")
+    assert d["segment_speed_kmh"] == 3.8                            # 125 m between А and Б in 120 s
+    assert body["vehicles"]["116057"]["has_schedule"] is False
+    assert [a["name"] for a in arrivals] == ["Остановка А", "Остановка Б"]

@@ -46,3 +46,6 @@ class Settings(BaseSettings):
     ndtp_fresh_s: float = Field(default=60.0, description="a vehicle with NDTP this recent ignores replayed rows")
     ndtp_max_clock_skew_s: float = Field(default=300.0, description="beyond this terminal-vs-server clock "
                                          "difference, the server receive time is used")
+
+    # Vehicle state
+    state_tick_s: float = Field(default=2.0, description="how often arrivals/derived features are recomputed")

@@ -19,11 +19,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import health, ingest
+from .api import health, ingest, state as state_api
 from .clock import DatasetClock
 from .config import Settings
 from .ingest import Ingest, ReplaySource, Traffic, load_traffic
 from .ndtp import NdtpFix, NdtpServer
+from .state import Fleet, VehicleSchedule, load_schedule
 
 VERSION = "0.1.0"
 
@@ -43,9 +44,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.info("dataset clock: %s at startup, speed x%g", state.clock.anchor_dataset, state.clock.speed)
 
         traffic = await _load_traffic(settings, state.issues)
+        schedules = await _load_schedule(settings, state.issues)
         state.ingest = Ingest(state.clock, traffic.unit_to_tr if traffic else {}, ndtp_fresh_s=settings.ndtp_fresh_s,
                               max_skew_s=settings.ndtp_max_clock_skew_s)
-        tasks: list[asyncio.Task] = []
+        state.fleet = Fleet(schedules, state.clock)
+        state.ingest.subscribe(state.fleet.on_ping)
+        tasks: list[asyncio.Task] = [_background(state.fleet.run(settings.state_tick_s), "fleet")]
 
         state.ndtp = None
         if settings.ndtp_enabled:
@@ -82,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
     app.include_router(health.router)
     app.include_router(ingest.router)
+    app.include_router(state_api.router)
     return app
 
 
@@ -95,6 +100,18 @@ async def _load_traffic(settings: Settings, issues: list[str]) -> Traffic | None
     except (OSError, ValueError, KeyError) as e:
         issues.append(f"cannot load {path}: {type(e).__name__}: {e}")
         return None
+
+
+async def _load_schedule(settings: Settings, issues: list[str]) -> dict[int, VehicleSchedule]:
+    if settings.dataset_dir is None:
+        return {}
+    name = "schedule_plan.csv" if settings.dataset_split == "validate" else "schedule.csv"
+    path = settings.dataset_dir / settings.dataset_split / name
+    try:
+        return await asyncio.to_thread(load_schedule, path)
+    except (OSError, ValueError, KeyError) as e:
+        issues.append(f"cannot load {path}: {type(e).__name__}: {e} — no arrivals, deviations or predictions")
+        return {}
 
 
 def _background(coro: Coroutine, name: str) -> asyncio.Task:
