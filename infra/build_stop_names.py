@@ -1,11 +1,17 @@
-"""Для остановок без ``building_address`` в датасете ищем название в OSM Overpass API.
+"""Для всех остановок расписания подтягиваем человеческие названия из OSM.
 
-У ~16% уникальных координат (135 из 847) `building_address` пустой — на карточке
-показываем «остановка без адреса», что выглядит плохо. OSM обычно знает эти места
-(тег ``highway=bus_stop`` или ``public_transport=platform`` с ``name``).
+Проблема: в датасете у 16% остановок ``building_address`` пуст, а у остальных
+это адрес здания — «ул. Маршала Василевского, д.17», а не «Метро Щукинская».
+Диспетчер не опознаёт остановку по адресу.
 
-Один запуск, коммитим ``backend/app/state/stop_names.json`` в git. Пере-собирать
-нужно только если поменялся ``schedule_plan.csv``.
+Решение: одним запросом к Overpass выкачиваем все именованные остановки
+(``highway=bus_stop`` или ``public_transport=platform``/``stop_position``)
+в bbox Москвы, для каждой остановки датасета берём ближайшую OSM
+в пределах ``RADIUS_M``. Результат — ``backend/app/state/stop_names.json``,
+``schedule.py`` предпочитает его ``building_address``.
+
+Один запуск, коммитим json в git. Перегенерировать надо только если
+поменялся ``schedule_plan.csv``.
 
 Запуск:
     python infra/build_stop_names.py --dataset ./dataset/validate/schedule_plan.csv
@@ -16,6 +22,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import re
 import sys
 import time
@@ -24,70 +31,83 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "backend"))
-
 _POINT = re.compile(r"POINT \(([-\d.]+) ([-\d.]+)\)")
 OVERPASS = "https://overpass-api.de/api/interpreter"
-RADIUS_M = 120  # у Ново-Переделкино и в промзонах остановка может быть >50м от точки CSV
+# BBOX (south, west, north, east) — Москва + область (все датасетные остановки укладываются)
+BBOX = (55.4, 37.1, 56.05, 37.95)
+RADIUS_M = 80
 
 log = logging.getLogger("build_stop_names")
 
 
-def collect_empty(schedule_path: Path) -> list[tuple[float, float]]:
-    """Уникальные (lon, lat) с пустым building_address."""
+def collect_stops(schedule_path: Path) -> dict[tuple[float, float], str]:
+    """Уникальные (lat, lon) → building_address (пусто если нет)."""
     seen: dict[tuple[float, float], str] = {}
     with schedule_path.open(newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             m = _POINT.match(r["geom"])
             if not m:
                 continue
-            lon, lat = round(float(m.group(1)), 5), round(float(m.group(2)), 5)
+            lat = round(float(m[2]), 5)
+            lon = round(float(m[1]), 5)
             addr = (r.get("building_address") or "").strip()
-            if (lon, lat) not in seen or (not seen[(lon, lat)] and addr):
-                seen[(lon, lat)] = addr
-    return [c for c, a in seen.items() if not a]
+            if (lat, lon) not in seen or (not seen[(lat, lon)] and addr):
+                seen[(lat, lon)] = addr
+    return seen
 
 
-def query_overpass(lon: float, lat: float, radius_m: int = RADIUS_M) -> str | None:
-    """Ближайший ``bus_stop``/``platform`` с ``name`` внутри radius_m метров."""
+def fetch_osm_stops(bbox: tuple[float, float, float, float]) -> list[tuple[float, float, str]]:
+    s, w, n, e = bbox
     q = (
-        f"[out:json][timeout:15];"
-        f'(node(around:{radius_m},{lat},{lon})["highway"="bus_stop"]["name"];'
-        f'node(around:{radius_m},{lat},{lon})["public_transport"="platform"]["name"];'
-        f'node(around:{radius_m},{lat},{lon})["public_transport"="stop_position"]["name"];);'
+        f"[out:json][timeout:120];"
+        f'(node["highway"="bus_stop"]["name"]({s},{w},{n},{e});'
+        f'node["public_transport"="platform"]["name"]({s},{w},{n},{e});'
+        f'node["public_transport"="stop_position"]["name"]({s},{w},{n},{e}););'
         f"out tags center;"
     )
     data = urllib.parse.urlencode({"data": q}).encode("utf-8")
-    req = urllib.request.Request(OVERPASS, data=data, headers={"User-Agent": "msktrans-stops/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.loads(resp.read())
-    els = body.get("elements", [])
-    if not els:
-        return None
-    for e in els:  # первое имя, всё равно все рядом (в пределах радиуса)
-        n = e.get("tags", {}).get("name")
-        if n:
-            return n
-    return None
-
-
-def build(schedule_path: Path, sleep_s: float) -> dict[str, str]:
-    todo = collect_empty(schedule_path)
-    log.info("остановок без адреса: %d", len(todo))
-    out: dict[str, str] = {}
-    for i, (lon, lat) in enumerate(todo, 1):
+    req = urllib.request.Request(OVERPASS, data=data, headers={"User-Agent": "msktrans-stops/2.0"})
+    for attempt in range(1, 5):
         try:
-            name = query_overpass(lon, lat)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
-            log.warning("[%d/%d] %.5f,%.5f: %s", i, len(todo), lat, lon, e)
-            name = None
-        if name:
-            out[f"{lat:.5f},{lon:.5f}"] = name
-            log.info("[%d/%d] %.5f,%.5f: %s", i, len(todo), lat, lon, name)
-        else:
-            log.info("[%d/%d] %.5f,%.5f: —", i, len(todo), lat, lon)
-        time.sleep(sleep_s)
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                body = json.loads(resp.read())
+            break
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as ex:
+            log.warning("Overpass attempt %d failed: %s", attempt, ex)
+            time.sleep(10 * attempt)
+    else:
+        raise RuntimeError("Overpass unreachable after 4 attempts")
+    return [(el["lat"], el["lon"], el["tags"]["name"])
+            for el in body.get("elements", []) if el.get("tags", {}).get("name")]
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371000.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def match(stops: dict[tuple[float, float], str], osm: list[tuple[float, float, str]],
+          radius_m: float) -> dict[str, str]:
+    """Для каждой остановки датасета — ближайшая OSM в пределах radius_m.
+    OSM раскладываем в грид с ячейкой 0.001° (~100м) → ищем в 3×3 соседях."""
+    grid: dict[tuple[int, int], list[tuple[float, float, str]]] = {}
+    for lat, lon, name in osm:
+        grid.setdefault((int(lat * 1000), int(lon * 1000)), []).append((lat, lon, name))
+    out: dict[str, str] = {}
+    for (lat, lon) in stops:
+        ki, kj = int(lat * 1000), int(lon * 1000)
+        best: tuple[float, str] | None = None
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                for olat, olon, name in grid.get((ki + di, kj + dj), ()):
+                    d = _haversine_m(lat, lon, olat, olon)
+                    if d <= radius_m and (best is None or d < best[0]):
+                        best = (d, name)
+        if best:
+            out[f"{lat:.5f},{lon:.5f}"] = best[1]
     return out
 
 
@@ -95,14 +115,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dataset", default="dataset/validate/schedule_plan.csv", type=Path)
     parser.add_argument("--out", default="backend/app/state/stop_names.json", type=Path)
-    parser.add_argument("--sleep", type=float, default=0.6)  # ~1.5 rps, вежливо к бесплатной Overpass
+    parser.add_argument("--radius-m", type=float, default=RADIUS_M)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    names = build(args.dataset, args.sleep)
+    stops = collect_stops(args.dataset)
+    log.info("остановок в датасете (уникальных): %d", len(stops))
+    log.info("Overpass: qbox %s ...", BBOX)
+    osm = fetch_osm_stops(BBOX)
+    log.info("именованных остановок в OSM: %d", len(osm))
+    names = match(stops, osm, args.radius_m)
+    log.info("совпало (радиус %.0fм): %d / %d", args.radius_m, len(names), len(stops))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(names, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
-    log.info("готово: %d названий из %d пустых → %s", len(names), len(collect_empty(args.dataset)), args.out)
+    log.info("готово → %s", args.out)
 
 
 if __name__ == "__main__":

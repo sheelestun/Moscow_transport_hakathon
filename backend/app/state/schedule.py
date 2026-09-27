@@ -73,8 +73,9 @@ class VehicleSchedule:
 
 
 def _load_stop_names() -> dict[tuple[float, float], str]:
-    """OSM-derived names for stops the dataset left blank. Key is (lat, lon) rounded to 5dp.
-    Built once by ``infra/build_stop_names.py`` from Overpass; missing file → no fallback."""
+    """OSM-derived names for stops (837/847 покрытие). Key is (lat, lon) rounded to 5dp.
+    Built once by ``infra/build_stop_names.py`` from Overpass. Приоритетнее ``building_address`` —
+    «Метро Щукинская» читается как остановка, а «ул. Маршала Василевского, д.17» — нет."""
     if not STOP_NAMES.exists():
         return {}
     try:
@@ -112,7 +113,7 @@ def load_schedule(path: Path) -> dict[int, VehicleSchedule]:
             if m is None:
                 raise ValueError(f"{path}: bad geom {r['geom']!r} for tt_action_item_id {r['tt_action_item_id']}")
             lon, lat = float(m[1]), float(m[2])
-            name = r["building_address"] or stop_names.get((round(lat, 5), round(lon, 5)), "")
+            name = stop_names.get((round(lat, 5), round(lon, 5)), "") or r["building_address"]
             visits.append(StopVisit(pos=pos, stop_id=int(r["tt_action_item_id"]), plan=plan, lon=lon, lat=lat,
                                     manual_fill=r["manual_fill"] == "True", name=name, geom=r["geom"],
                                     trip=trip, idx_in_trip=idx))
