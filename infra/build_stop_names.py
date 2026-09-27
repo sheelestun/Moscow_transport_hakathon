@@ -35,7 +35,7 @@ _POINT = re.compile(r"POINT \(([-\d.]+) ([-\d.]+)\)")
 OVERPASS = "https://overpass-api.de/api/interpreter"
 # BBOX (south, west, north, east) — Москва + область (все датасетные остановки укладываются)
 BBOX = (55.4, 37.1, 56.05, 37.95)
-RADIUS_M = 80
+RADIUS_M = 200
 
 log = logging.getLogger("build_stop_names")
 
