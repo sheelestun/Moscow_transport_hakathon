@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css" />
-  <link rel="stylesheet" href="css/styles.css?v=2026092801" />
+  <link rel="stylesheet" href="css/styles.css?v=2026092805" />
   <!-- Аналитика посещений и записи сессий (stat.mowtransit.ru) -->
   <script defer src="https://stat.mowtransit.ru/script.js" data-website-id="33c60042-1de3-4c38-a51e-14147f4b76a2"></script>
   <script defer src="https://stat.mowtransit.ru/recorder.js" data-website-id="33c60042-1de3-4c38-a51e-14147f4b76a2"></script>
@@ -70,7 +70,6 @@
               <span class="lines__actions"><button class="link" id="lines-all">Отметить все</button><button class="link" id="lines-none">Снять все</button></span>
             </div>
             <div class="lines__list" id="lines-list"></div>
-            <p class="lines__hint">Выбранные линии видны на карте, в списке «Требуют внимания» и в цифрах сверху. Выбор запоминается.</p>
           </div>
         </div>
         <label class="toggle">
@@ -94,8 +93,7 @@
         <div class="legend__row"><span class="dot dot--red"></span>опоздает больше чем на 3 мин</div>
         <div class="legend__row"><span class="dot dot--yellow"></span>риск опоздания</div>
         <div class="legend__row"><span class="dot dot--green"></span>по графику</div>
-        <div class="legend__row legend__signals"><span class="sig-ico"><i class="r"></i><i class="g"></i></span>светофоры <span class="muted">(видны при приближении и у выбранного автобуса; фазы — симуляция)</span></div>
-        <div class="legend__hint">Нажмите на автобус — подсветится его маршрут</div>
+        <div class="legend__row legend__signals"><span class="sig-ico"><i class="r"></i><i class="g"></i></span>светофоры</div>
       </div>
     </section>
 
@@ -104,7 +102,7 @@
       <div id="view-list">
         <div class="panel__head">
           <h2>Требуют внимания <span class="badge" id="alerts-count">0</span></h2>
-          <p class="muted">Опоздание, которое модель ожидает через 10–15 минут. Нажмите, чтобы увидеть причину и расписание.</p>
+          <p class="muted">Прогноз на 10–15 минут вперёд</p>
         </div>
         <ul class="alerts" id="alerts"></ul>
         <p class="alerts-hidden" id="alerts-hidden" hidden></p>
@@ -113,32 +111,32 @@
           <h3>Сбылись ли прогнозы
             <button class="link link--muted verified__download" id="verified-download" hidden title="Выгрузить сверенные прогнозы в CSV">⬇ CSV</button>
           </h3>
-          <p class="muted" id="verified-score">Когда наступает время инцидента, сверяем прогноз с фактом.</p>
+          <p class="muted" id="verified-score">Прогноз против факта</p>
         </div>
         <ul class="verified" id="verified"></ul>
 
         <div class="panel__head panel__head--sub"><h3>Маршруты</h3></div>
         <ul class="routes" id="routes"></ul>
 
-        <div class="panel__head panel__head--sub"><h3>Опоздания по часам</h3>
-          <p class="muted">Среднее опоздание (сек) в это время суток по обучающим данным. Тёмные ячейки — часы риска.</p>
+        <!-- «Паровозики»: блок виден, только когда они есть — это то, на что диспетчер может повлиять -->
+        <div id="bunching-block" hidden>
+          <div class="panel__head panel__head--sub"><h3>Идут «паровозиком»</h3>
+          </div>
+          <ul class="worst-stops" id="bunching"></ul>
         </div>
-        <div class="heatmap" id="heatmap"></div>
 
-        <div class="panel__head panel__head--sub"><h3>Проблемные остановки</h3>
-          <p class="muted">Топ-10 по прогнозируемой задержке в ближайшие 15 минут.</p>
-        </div>
-        <ul class="worst-stops" id="worst-stops"></ul>
-
-        <div class="panel__head panel__head--sub"><h3>Слипание «паровозиком»</h3>
-          <p class="muted">Пары ТС одного маршрута с интервалом меньше 60% планового (bus bunching).</p>
-        </div>
-        <ul class="worst-stops" id="bunching"></ul>
-
-        <div class="panel__head panel__head--sub"><h3>Точность по горизонту</h3>
-          <p class="muted">MAE в зависимости от того, за сколько минут до целевого момента сделан прогноз.</p>
-        </div>
-        <div class="lead-bars" id="lead-bars"></div>
+        <!-- Статистика для разбора работы модели — диспетчеру в смене не нужна, поэтому свёрнута -->
+        <details class="analytics">
+          <summary>Статистика и качество модели</summary>
+          <div class="panel__head panel__head--sub"><h3>Точность по горизонту</h3>
+            <p class="muted">Средняя ошибка прогноза в зависимости от того, за сколько минут он сделан.</p>
+          </div>
+          <div class="lead-bars" id="lead-bars"></div>
+          <div class="panel__head panel__head--sub"><h3>Опоздания по часам</h3>
+            <p class="muted">Среднее опоздание в это время суток по обучающим данным.</p>
+          </div>
+          <div class="heatmap" id="heatmap"></div>
+        </details>
       </div>
       <div id="view-vehicle" hidden></div>
     </aside>
@@ -166,18 +164,18 @@
 
   <!-- Наш код. Порядок важен: каждый файл использует предыдущие.
        ?v=… — версия: меняйте её после правок, чтобы браузер не брал старые файлы из кэша. -->
-  <script src="js/config.js?v=2026092801"></script>
-  <script src="js/labels.js?v=2026092801"></script>
-  <script src="js/geo.js?v=2026092801"></script>
-  <script src="js/mock-routes.js?v=2026092801"></script>
-  <script src="js/mock-signals.js?v=2026092801"></script>
-  <script src="js/hourly-stats.js?v=2026092801"></script>
-  <script src="js/mock.js?v=2026092801"></script>
-  <script src="js/api.js?v=2026092801"></script>
-  <script src="js/basemap.js?v=2026092801"></script>
-  <script src="js/map.js?v=2026092801"></script>
-  <script src="js/sidebar.js?v=2026092801"></script>
-  <script src="js/whatif.js?v=2026092801"></script>
-  <script src="js/app.js?v=2026092801"></script>
+  <script src="js/config.js?v=2026092805"></script>
+  <script src="js/labels.js?v=2026092805"></script>
+  <script src="js/geo.js?v=2026092805"></script>
+  <script src="js/mock-routes.js?v=2026092805"></script>
+  <script src="js/mock-signals.js?v=2026092805"></script>
+  <script src="js/hourly-stats.js?v=2026092805"></script>
+  <script src="js/mock.js?v=2026092805"></script>
+  <script src="js/api.js?v=2026092805"></script>
+  <script src="js/basemap.js?v=2026092805"></script>
+  <script src="js/map.js?v=2026092805"></script>
+  <script src="js/sidebar.js?v=2026092805"></script>
+  <script src="js/whatif.js?v=2026092805"></script>
+  <script src="js/app.js?v=2026092805"></script>
 </body>
 </html>

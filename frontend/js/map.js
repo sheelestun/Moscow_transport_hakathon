@@ -16,6 +16,8 @@ window.App = window.App || {};
   let ready = false;       // подложка и наши слои загружены
   let pendingRoutes = null; // маршруты, пришедшие раньше, чем загрузилась карта
   let visible = null;       // Set route_id видимых линий или null = все
+  let routesById = new Map();
+  const lineCum = new WeakMap();
 
   const empty = { type: "FeatureCollection", features: [] };
 
@@ -72,6 +74,8 @@ window.App = window.App || {};
 
     drawRoutes(routes) {
       this._routes = routes;
+      routesById = new Map(routes.map((r) => [r.route_id, r]));
+      for (const m of markers.values()) updateMarkerVisibility(m);
       if (!ready) { pendingRoutes = routes; return; }
       map.getSource("routes").setData({
         type: "FeatureCollection",
@@ -97,7 +101,7 @@ window.App = window.App || {};
     // Показать только выбранные линии (null — все)
     setVisibleRoutes(set) {
       visible = set;
-      for (const m of markers.values()) m.el.style.display = isShown(m.data.route_id) ? "" : "none";
+      for (const m of markers.values()) updateMarkerVisibility(m);
       if (!ready) return;
       map.setFilter("routes-line", set ? ["in", ["get", "route_id"], ["literal", [...set]]] : null);
     },
@@ -151,7 +155,7 @@ window.App = window.App || {};
           m.lastAt = now;
         }
         m.data = v;
-        m.el.style.display = isShown(v.route_id) ? "" : "none";
+        updateMarkerVisibility(m);
         if (m.level !== level) {
           m.el.classList.remove("veh--red", "veh--yellow", "veh--green");
           m.el.classList.add(`veh--${level}`);
@@ -245,12 +249,51 @@ window.App = window.App || {};
     focusRoute(route, vehicle) {
       const b = new maplibregl.LngLatBounds();
       route.geometry.forEach((p) => b.extend(ll(p)));
-      if (vehicle) b.extend([vehicle.lon, vehicle.lat]);
+      if (vehicle && isOnRoute(vehicle)) b.extend([vehicle.lon, vehicle.lat]);
       map.fitBounds(b, { padding: { top: 70, bottom: 70, left: 70, right: 70 }, maxZoom: 14.5, duration: 700 });
     },
   };
 
   const isShown = (routeId) => !visible || visible.has(routeId);
+
+  // Явные GPS-выбросы не должны растягивать карту и создавать рядом с маршрутом
+  // «лишние» автобусы. Если геометрия маршрута ещё не загружена, маркер оставляем:
+  // отсутствие справочных данных не должно скрывать реальное ТС.
+  function isOnRoute(vehicle) {
+    const route = routesById.get(vehicle.route_id);
+    if (!route) return true;
+
+    const directions = (route.directions || []).filter((d) => Array.isArray(d.geometry) && d.geometry.length > 1);
+    const direction = vehicle.direction_id == null
+      ? null
+      : directions.find((d) => String(d.direction_id) === String(vehicle.direction_id));
+    const lines = direction
+      ? [direction.geometry]
+      : directions.length
+        ? directions.map((d) => d.geometry)
+        : Array.isArray(route.geometry) && route.geometry.length > 1
+          ? [route.geometry]
+          : [];
+    if (!lines.length) return true;
+
+    const point = [vehicle.lat, vehicle.lon];
+    const maxDistance = App.config.OFF_ROUTE_HIDE_M;
+    for (const line of lines) {
+      let cum = lineCum.get(line);
+      if (!cum) { cum = App.geo.cumulative(line); lineCum.set(line, cum); }
+      if (App.geo.project(line, cum, point).off_m <= maxDistance) return true;
+    }
+    return false;
+  }
+
+  function updateMarkerVisibility(marker) {
+    const show = isShown(marker.data.route_id) && isOnRoute(marker.data);
+    marker.el.style.display = show ? "" : "none";
+    if (!show && popup && popup.isOpen() && popup._vid === marker.data.vehicle_id) {
+      popup.remove();
+      popup._vid = null;
+    }
+  }
 
   // Линии маршрутов: оба направления (если бэкенд их отдаёт), иначе одна линия
   function routeFeatures(routes, levels) {
@@ -301,7 +344,7 @@ window.App = window.App || {};
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
         "line-color": COLORS.grey,
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 5],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 2.5, 17, 3.5],
         "line-opacity": 0.85,
       },
     });
@@ -310,18 +353,18 @@ window.App = window.App || {};
       id: "sel-glow", type: "line", source: "sel-line",
       filter: ["!=", ["get", "level"], "passed"],
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": byLevel(COLORS.grey), "line-width": 16, "line-blur": 10, "line-opacity": 0.45 },
+      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 5, 14, 8, 17, 10], "line-blur": 6, "line-opacity": 0.35 },
     });
     map.addLayer({
       id: "sel-passed", type: "line", source: "sel-line",
       filter: ["==", ["get", "level"], "passed"],
-      paint: { "line-color": COLORS.passed, "line-width": 3, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
+      paint: { "line-color": COLORS.passed, "line-width": 2, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
     });
     map.addLayer({
       id: "sel-line", type: "line", source: "sel-line",
       filter: ["!=", ["get", "level"], "passed"],
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 7] },
+      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 14, 3.5, 17, 4.5] },
     });
     // Светофоры: реальные места (OpenStreetMap), фазы — симуляция.
     // Значок как у настоящего светофора: тёмный корпус, горит красная или зелёная лампа.

@@ -158,22 +158,23 @@ window.App = window.App || {};
     try {
       const pairs = await source.getBunching();
       if (!pairs || !pairs.length) {
-        el.innerHTML = `<li class="empty empty--muted">Слипаний не обнаружено.</li>`;
+        el.innerHTML = "";
+        const blk = $("bunching-block"); if (blk) blk.hidden = true;
         App.map.setBunchingPairs && App.map.setBunchingPairs([]);
         return;
       }
+      const blk = $("bunching-block"); if (blk) blk.hidden = false;
       el.innerHTML = pairs.slice(0, 6).map((p) => {
-        const gap = Math.max(0, Math.round(p.headway_sec));
-        const plan = Math.max(0, Math.round(p.plan_headway_sec));
-        const pct = Math.round((p.ratio || 0) * 100);
-        return `<li class="worst-stop" data-pair="${App.esc(p.leader_id)}|${App.esc(p.follower_id)}">
-          <span class="worst-stop__delay t-red">${gap}с</span>
+        const min = (sec) => Math.max(1, Math.round(sec / 60));
+        return `<li><button class="worst-stop worst-stop--btn" data-vid="${App.esc(p.follower_id)}" title="Открыть догоняющий автобус">
+          <span class="worst-stop__delay t-red">${min(p.headway_sec)} мин</span>
           <span class="worst-stop__body">
-            <b>${App.esc(App.routeLabel(p.route_id))} · пара ${App.esc(p.leader_id)} → ${App.esc(p.follower_id)}</b>
-            <span class="muted">интервал ${gap}с при плане ${plan}с (${pct}% от плана)</span>
+            <b>${App.esc(App.routeLabel ? App.routeLabel(p.route_id) : p.route_id)}: ТС ${App.esc(p.follower_id)} догоняет ТС ${App.esc(p.leader_id)}</b>
+            <span class="muted">между ними ${min(p.headway_sec)} мин, по плану ${min(p.plan_headway_sec)} мин</span>
           </span>
-        </li>`;
+        </button></li>`;
       }).join("");
+      el.querySelectorAll("[data-vid]").forEach((b) => (b.onclick = () => selectVehicle(b.dataset.vid)));
       App.map.setBunchingPairs && App.map.setBunchingPairs(pairs);
     } catch {
       el.hidden = true;
@@ -237,13 +238,13 @@ window.App = window.App || {};
     App.sidebar.openVehicle({
       onBack: clearSelection,
       canApply: !!source.applyMeasure, // «Применить» есть только в демо-симуляции
-      isApplied: (routeId) => lastApplied(routeId),
+      appliedFor: () => activeMeasures(state.vehicles.get(id).route_id, id),
       onRecEffect: (scenario) => {
         const cur = state.vehicles.get(id);
         const a = alertFor(id);
-        return source.whatif({ scenario, route_id: cur.route_id, at_stop_id: a ? a.target_stop_id : null });
+        return source.whatif({ scenario, route_id: cur.route_id, vehicle_id: id, at_stop_id: a ? a.target_stop_id : null });
       },
-      onApply: (scenario) => applyMeasure(scenario, state.vehicles.get(id).route_id),
+      onApply: (scenario) => applyMeasure(scenario, state.vehicles.get(id).route_id, id),
       onWhatifOpen: () => {
         const cur = state.vehicles.get(id);
         const a = alertFor(id);
@@ -253,7 +254,8 @@ window.App = window.App || {};
           route: state.routes.get(cur.route_id),
           alert: a,
           rec: App.toScenario((a && a.recommendation) || cur.recommendation),
-          onApply: (scenario) => applyMeasure(scenario, cur.route_id),
+          applied: activeMeasures(cur.route_id, id),
+          onApply: (scenario) => applyMeasure(scenario, cur.route_id, id),
         });
       },
     });
@@ -315,7 +317,9 @@ window.App = window.App || {};
         for (const r of state.routes.values()) {
           if (!isVisible(r.route_id)) continue;
           const sel = !!sv && sv.route_id === r.route_id;
-          source.getSignals(r.route_id).forEach((s) => list.push({ ...s, sel }));
+          // в live-режиме getSignals асинхронный и светофоров нет — пропускаем
+          const sig = source.getSignals(r.route_id);
+          if (Array.isArray(sig)) sig.forEach((s) => list.push({ ...s, sel }));
         }
         App.map.updateSignals(list);
       }
@@ -493,7 +497,7 @@ window.App = window.App || {};
     if (dl) dl.hidden = list.length === 0;
     $("verified-score").innerHTML = plain.length
       ? `Точность за смену: <b class="${hits / plain.length >= 0.7 ? "t-green" : "t-yellow"}">${Math.round((hits / plain.length) * 100)}%</b> — сбылось ${hits} из ${plain.length} (ошибка до 1,5 мин)`
-      : "Когда наступает время инцидента, сверяем прогноз с фактом.";
+      : "Прогноз против факта";
     $("verified").innerHTML = list.slice(0, 5).map((v) => {
       const err = v.delay_fact_sec - v.delay_pred_sec;
       let mark, cls;
@@ -507,7 +511,7 @@ window.App = window.App || {};
           <span class="vf__nums">прогноз <b>${App.fmtDelayShort(v.delay_pred_sec)}</b> · факт <b>${App.fmtDelayShort(v.delay_fact_sec)}</b></span>
           <span class="vf__mark">${cls === "ok" ? "✓" : "✗"} ${mark}</span>
         </li>`;
-    }).join("") || `<li class="empty empty--muted">Пока нечего сверять — первые результаты появятся через несколько минут.</li>`;
+    }).join("") || `<li class="empty empty--muted">Пока нечего сверять</li>`;
   }
 
   // ---------- Обрыв связи ----------
@@ -663,13 +667,28 @@ window.App = window.App || {};
   }
 
   // ---------- Применение меры (демо) ----------
-  async function applyMeasure(scenario, routeId) {
-    await source.applyMeasure({ scenario, route_id: routeId });
-    state.applied.push({ scenario, route_id: routeId, at: App.now() });
-    toast(scenario === "signal_priority"
-      ? `Приоритет на светофорах включён на маршруте ${routeId} на 20 минут: светофоры дают зелёный автобусам. Смотрите на карту.`
-      : `Применено: ${App.labels.scenarios[scenario]} на маршруте ${routeId}. Опоздания начнут отыгрываться.`);
+  const APPLIED_TEXT = {
+    signal_priority: (r) => `Приоритет на светофорах, маршрут ${r}, 20 мин`,
+    hold_at_stop: () => `Догоняющий автобус придержан`,
+    short_turn: () => `Автобус развёрнут раньше конечной`,
+    express: () => `Автобус пущен экспрессом`,
+    detour: () => `Автобус пущен в объезд`,
+  };
+  async function applyMeasure(scenario, routeId, vehicleId) {
+    await source.applyMeasure({ scenario, route_id: routeId, vehicle_id: vehicleId });
+    state.applied.push({ scenario, route_id: routeId, vehicle_id: vehicleId, at: App.now() });
+    toast(APPLIED_TEXT[scenario] ? APPLIED_TEXT[scenario](routeId)
+      : `Применено: ${App.labels.scenarios[scenario]}, маршрут ${routeId}`);
     renderVehicle();
+  }
+
+  // Меры, которые сейчас действуют (20 минут по часам симуляции): маршрутные — для всего маршрута,
+  // «точечные» (развернуть, экспресс, объезд, придержать) — только для того ТС, к которому применили.
+  // Мер можно применить несколько — эффекты складываются.
+  const VEHICLE_MEASURES = new Set(["short_turn", "express", "detour", "hold_at_stop"]);
+  function activeMeasures(routeId, vehicleId) {
+    return state.applied.filter((x) => x.route_id === routeId && App.now() - x.at < 20 * 60000 &&
+      (!VEHICLE_MEASURES.has(x.scenario) || x.vehicle_id === vehicleId));
   }
 
   // Последняя мера на маршруте за 20 минут (по часам симуляции)
