@@ -228,6 +228,19 @@ button { font: inherit; color: inherit; }
 .rec__effect { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .rec__effect > div { display: flex; flex-direction: column; gap: 2px; background: rgba(11,16,25,.5); border-radius: 10px; padding: 10px 12px; }
 .rec__effect--loading { display: block; color: var(--muted); font-size: 16px; padding: 6px 0; }
+.rec__effect--one { display: flex; }
+.rec__effect--one > div {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  width: fit-content;
+  min-width: 96px;
+  min-height: 42px;
+  padding: 6px 16px;
+  border: 1px solid rgba(47,210,122,.28);
+  border-radius: 999px;
+  background: rgba(47,210,122,.1);
+}
 .rec__num { font-family: var(--mono); font-size: 26px; font-weight: 700; line-height: 1.15; }
 .rec__cap { font-size: 15px; color: var(--muted); line-height: 1.3; }
 .rec__done { background: rgba(47,210,122,.1); border: 1px solid rgba(47,210,122,.35); color: #bdf2d4; border-radius: 10px; padding: 10px 12px; font-size: 16px; }
