@@ -107,14 +107,23 @@ def main() -> None:
             at = np.datetime64(ds_start + pd.Timedelta(seconds=elapsed * args.speed))
             units = [{"unitId": tr["unit_id"], "intervalMs": int(args.interval * 1000), "autoGenerate": False,
                       "cells": [nav_cell(tr, at, args.max_age)]} for tr in tracks.values()]
-            r = client.post("/api/config", json={"targetHost": args.target_host, "targetPort": args.target_port,
-                                                  "units": units})
             live = sum(u["cells"][0]["fields"].get("extraDopBit7", False) for u in units)
-            print(f"{pd.Timestamp(at):%H:%M:%S} датасета | HTTP {r.status_code} | с координатами {live}/{len(units)}", flush=True)
+            try:
+                r = client.post("/api/config", json={"targetHost": args.target_host, "targetPort": args.target_port,
+                                                      "units": units})
+                print(f"{pd.Timestamp(at):%H:%M:%S} датасета | HTTP {r.status_code} | с координатами {live}/{len(units)}",
+                      flush=True)
+            except httpx.HTTPError as e:
+                # Эмулятор отвечает медленно, пока недоступен NDTP-сервер (например, перезапуск backend'а).
+                # Не падаем: иначе эмулятор так и будет слать последнюю точку и ТС «замрут». Пробуем на следующем шаге.
+                print(f"{pd.Timestamp(at):%H:%M:%S} датасета | эмулятор не ответил ({type(e).__name__}), повтор", flush=True)
             time.sleep(max(0.0, args.interval - (time.time() - wall_start - elapsed)))
     finally:
-        client.post("/api/config", json={"targetHost": args.target_host, "targetPort": args.target_port, "units": []})
-        print("эмуляция остановлена")
+        try:
+            client.post("/api/config", json={"targetHost": args.target_host, "targetPort": args.target_port, "units": []})
+            print("эмуляция остановлена")
+        except httpx.HTTPError as e:
+            print(f"не удалось остановить эмуляцию ({type(e).__name__}): остановите вручную POST /api/config с units: []")
 
 
 if __name__ == "__main__":
