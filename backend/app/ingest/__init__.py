@@ -1,4 +1,4 @@
-"""Telemetry ingest: NDTP fixes and replayed ``traffic.csv`` rows become ``Ping``s on the dataset timeline."""
+"""Telemetry ingest: NDTP fixes and replayed ``traffic.csv`` rows become ``Ping`` objects on the dataset timeline."""
 
 from .dataset import Traffic, load_traffic
 from .models import Ping

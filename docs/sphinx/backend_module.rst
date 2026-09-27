@@ -1,12 +1,22 @@
-Backend-шлюз
-=============
+Backend
+=======
 
-Диспетчерский шлюз между NDTP-эмулятором/фронтом и ML-сервисом. FastAPI + WebSocket,
-симуляция движения ТС по маршрутам (то же, что ``frontend/js/mock.js``), проксирование
-``/whatif`` в ML.
+Боевой бэкенд (пакет ``app`` в ``backend/``): принимает поток NDTP-телеметрии от терминалов
+(и эмулятора), сопоставляет его с расписанием, считает производные признаки, получает прогнозы
+ML-сервиса в горизонте 10–15 минут, поднимает алерты и отдаёт всё диспетчерскому дашборду.
 
-Контракт вход/выход зафиксирован во ``frontend/js/api.js`` — live-режим отдаёт ровно
-то же, что мок, чтобы фронт-код не различал источник.
+Поток данных::
+
+    терминалы / эмулятор ──TCP:9201──▶ ndtp.server ─┐
+    traffic.csv (история) ──────────▶ ingest.replay ─┴─▶ ingest.pipeline ──▶ state.fleet
+                                                               (unit → ТС, датасетные часы)
+    state.fleet ──▶ predict.predictor ──HTTP──▶ ML-сервис
+                          │
+                          ├──▶ alerts ──▶ api.ws (WebSocket) ──▶ дашборд
+                          └──▶ db.history (Postgres)
+
+Спецификация HTTP API — Swagger UI бэкенда: ``https://api.mowtransit.ru/docs``
+(локально ``http://localhost:8000/docs``). Подробности, замеры и инструкции — ``backend/README.md``.
 
 Модули
 ------
@@ -15,41 +25,23 @@ Backend-шлюз
    :toctree: _autosummary
    :recursive:
 
-   main
-   simulator
-   routes_data
-   csv_replayer
-
-Endpoints
----------
-
-``GET /health``
-    Статус: число ТС, алертов, клиентов WS, доступность ML.
-
-``GET /routes``
-    6 маршрутов с polyline-геометрией (те же ``MOCK_ROUTES``, что во фронт-моке).
-
-``GET /vehicles``
-    Все ТС в текущий момент: координаты, ``delay_now_sec``, ``delay_pred_sec``,
-    ``risk_score``, у не-зелёных дополнительно ``reason_pattern``, ``top_features``.
-
-``GET /vehicles/{id}/schedule``
-    Полное расписание рейса с ``passed / next / upcoming`` и флагом ``is_target``.
-
-``GET /alerts?active=true``
-    Активные алерты, каждый содержит ``recommendation`` и ``eta_incident``.
-
-``GET /metrics/model``
-    Прокси на ML ``/metrics/model``; при недоступности ML — последние закешированные
-    метрики или заглушка.
-
-``POST /whatif``
-    Сценарий по маршруту. Локальная эвристика ``MEASURE_EFFECT`` +
-    точечный вызов ML ``/whatif/predict`` для каждого ТС.
-
-``POST /apply``
-    Применить меру в симуляции (пока demo-режим).
-
-``WS /ws``
-    Пуш ``vehicle.update`` каждый тик; ``alert.new`` / ``alert.verified`` /
-    ``alert.resolved`` по факту.
+   app.main
+   app.config
+   app.clock
+   app.ndtp.protocol
+   app.ndtp.server
+   app.ingest.models
+   app.ingest.dataset
+   app.ingest.pipeline
+   app.ingest.replay
+   app.state.schedule
+   app.state.arrivals
+   app.state.fleet
+   app.predict.client
+   app.predict.payload
+   app.predict.predictor
+   app.alerts
+   app.db.history
+   app.api.views
+   app.api.dashboard
+   app.api.ws

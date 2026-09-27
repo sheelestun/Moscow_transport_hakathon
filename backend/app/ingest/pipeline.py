@@ -1,4 +1,4 @@
-"""Ingest pipeline: NDTP fixes and replayed rows become ``Ping``s on one timeline, one stream.
+"""Ingest pipeline: NDTP fixes and replayed rows become ``Ping`` objects on one timeline, in one stream.
 
 Both sources feed the same pipeline, arbitrated per vehicle: while a vehicle has sent NDTP within
 ``ndtp_fresh_s``, replayed rows for it are dropped. When its live feed goes quiet, replay takes over;

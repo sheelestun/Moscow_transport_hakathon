@@ -9,7 +9,7 @@ import sys
 # -- Path setup --------------------------------------------------------------
 # Чтобы autodoc нашёл ML- и backend-модули, добавляем оба пути.
 sys.path.insert(0, os.path.abspath("../../ml/src"))
-sys.path.insert(0, os.path.abspath("../../backend/src"))
+sys.path.insert(0, os.path.abspath("../../backend"))  # пакет app (боевой бэкенд)
 
 # -- Project information -----------------------------------------------------
 project = "Предиктор задержек Москвы"
@@ -63,6 +63,8 @@ autodoc_mock_imports = [
     "scipy",
     "joblib",
     "httpx",
+    "asyncpg",
+    "pydantic_settings",
 ]
 
 templates_path = ["_templates"]

@@ -1,0 +1,77 @@
+# Production stack for the VPS — see README.md next to this file.
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d --build
+#
+# Exposure: the API and the dashboard listen on 127.0.0.1 only (the host's nginx serves them as
+# api./app.mowtransit.ru with TLS); NDTP 9201 is public raw TCP (ndtp.mowtransit.ru); ML and Postgres
+# are not published at all.
+
+name: mowtransit
+
+services:
+
+  ml:
+    build: ../../ml
+    restart: unless-stopped
+    volumes:
+      # Model artifacts from the ML team (train_catboost.py --fit output); mounted, not baked in.
+      - ${ML_ARTIFACTS_DIR:-../../ml/artifacts}:/app/artifacts:ro
+    environment:
+      ML_MODEL_VERSION: ${ML_MODEL_VERSION:-catboost-ensemble}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  backend:
+    build: ../../backend
+    restart: unless-stopped
+    # No depends_on: without ML the backend forecasts the baseline, without Postgres it buffers history —
+    # it degrades instead of waiting (criterion 5).
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"   # HTTP API + WebSocket, behind nginx (api.mowtransit.ru)
+      - "${NDTP_PUBLIC_PORT:-9201}:9201"     # NDTP terminals / emulator (ndtp.mowtransit.ru), raw TCP
+    ulimits:
+      nofile: 65536                          # one file descriptor per connected terminal
+    environment:
+      ML_URL: http://ml:8001
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATASET_DIR: /data
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      CLOCK_START: ${CLOCK_START:-}
+      CLOCK_SPEED: ${CLOCK_SPEED:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # The organizers' dataset archive, unpacked (unit registry, replay, schedule).
+      - ${DATASET_DIR:-../../dataset}:/data:ro
+
+  frontend:
+    build: ../../frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:80"     # dashboard, behind nginx (app.mowtransit.ru)
+    environment:
+      MODE: live
+      API_BASE: ${PUBLIC_API_BASE:-https://api.mowtransit.ru}
+      WS_URL: ${PUBLIC_WS_URL:-wss://api.mowtransit.ru/ws}
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

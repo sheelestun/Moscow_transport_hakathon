@@ -1,5 +1,7 @@
 # infra/
 
+**Production deployment (VPS, mowtransit.ru): [`deploy/`](deploy/README.md)** — compose stack, nginx sites, runbook.
+
 Инфраструктурные конфиги для локального стенда Moscow Transport Hackathon.
 
 ## emulator-config.json

@@ -18,7 +18,7 @@ Built piece by piece; each piece is tested before the next starts.
 | 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | done |
 | 8 | Postgres history | done |
 | 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | done |
-| 10 | Deploy: nginx vhosts (`api.` / `app.` / `docs.` mowtransit.ru), TLS, compose | |
+| 10 | Deploy: nginx vhosts (`api.` / `app.` / `docs.` mowtransit.ru), TLS, compose | done — [`infra/deploy/`](../infra/deploy/README.md) |
 
 ## Layout (so far)
 
@@ -69,6 +69,8 @@ src/csv_replayer.py   kept from the old backend: reference for the ML /predict p
 ```
 
 ## Running
+
+Production (the VPS: `api.` / `app.` / `docs.` / `ndtp.` mowtransit.ru): see [`infra/deploy/README.md`](../infra/deploy/README.md).
 
 | What | Command | Ports |
 |---|---|---|
