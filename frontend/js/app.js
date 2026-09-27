@@ -24,9 +24,18 @@ window.App = window.App || {};
     lines: loadLines(),
     verified: [],        // сверенные прогнозы (прогноз vs факт)  // выбранные линии: Set route_id или null = все
   };
-  App.routeLabel = (routeId) => {
+  // Номер маршрута для «фишки». У одного ТС за день бывает несколько разных маршрутов (см. route_names.json —
+  // directions у каждого направления свой route_number); routeId один на все них, поэтому если известно, в каком
+  // направлении ТС едет прямо сейчас (directionId, из vehicle.direction_id), берём номер именно этого направления,
+  // а не общий (самый частый за день) — иначе после переезда ТС на другой маршрут бейдж показывал бы старый номер.
+  App.routeLabel = (routeId, directionId) => {
     const r = state.routes.get(routeId);
-    return (r && r.route_number) || routeId;
+    if (!r) return routeId;
+    if (directionId != null) {
+      const d = (r.directions || []).find((x) => x.direction_id === directionId);
+      if (d && d.route_number) return d.route_number;
+    }
+    return r.route_number || routeId;
   };
 
   // ---------- Выбор линий (запоминаем в браузере) ----------

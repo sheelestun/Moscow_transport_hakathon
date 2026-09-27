@@ -94,7 +94,7 @@ window.App = window.App || {};
       $("vh-hero").innerHTML = `
         <div class="hero hero--${level}">
           <div class="hero__top">
-            <span class="route-chip route-chip--lg">${App.esc(App.routeLabel(v.route_id))}</span>
+            <span class="route-chip route-chip--lg">${App.esc(App.routeLabel(v.route_id, v.direction_id))}</span>
             <div class="hero__title">
               <b>ТС ${App.esc(v.vehicle_id)}</b>
               <span class="muted">${App.esc(schedule ? schedule.direction : route ? route.name : "")}</span>
