@@ -775,6 +775,19 @@ window.App = window.App || {};
     renderBunching();
     source.start(handlers);
 
+    // Ссылка с mowtransit.ru (?vehicle=<id>): сразу открываем карточку этого ТС.
+    // ТС может появиться не в первой пачке — ждём до 15 секунд.
+    const deepId = new URLSearchParams(location.search).get("vehicle");
+    if (deepId) {
+      let tries = 0;
+      const openDeep = () => {
+        if (state.vehicles.has(deepId)) selectVehicle(deepId);
+        else if (++tries < 15) setTimeout(openDeep, 1000);
+        else toast(`ТС ${deepId} сейчас не в эфире`);
+      };
+      openDeep();
+    }
+
     // Бейдж «симуляция ×N»: датасет проигрывается ускоренно, из-за чего маркеры на карте
     // едут быстрее реального — без индикатора это выглядит как баг («слишком быстро»).
     // Обновляем раз в 30 сек: скорость меняется только через рестарт бэкенда с новым CLOCK_SPEED.
