@@ -109,6 +109,30 @@ def project(poly_xy: np.ndarray, p: np.ndarray) -> tuple[float, float]:
     return float(d[i]), float(cum[i] + np.sqrt(L[i]) * tt[i])
 
 
+def project_after(poly_xy: np.ndarray, p: np.ndarray, min_pos: float) -> tuple[float, float]:
+    """Как ``project``, но не даёт спроецироваться раньше ``min_pos`` вдоль линии.
+
+    Нужна, когда маршрут проходит через одно и то же место несколько раз за направление (кольцевые заезды,
+    несколько остановок у одного узла типа «Метро Алма-Атинская» на разных витках) — без этого соседние по
+    времени остановки могли спроецироваться на РАЗНЫЕ проезды мимо одной точки и линия дёргалась назад-вперёд.
+    """
+    a, b = poly_xy[:-1], poly_xy[1:]
+    ab = b - a
+    L = (ab ** 2).sum(1)
+    cum = np.r_[0, np.cumsum(np.sqrt(L))]
+    tt = np.clip(((p - a) * ab).sum(1) / np.where(L > 0, L, 1), 0, 1)
+    proj = a + ab * tt[:, None]
+    pos = cum[:-1] + np.sqrt(L) * tt
+    d = np.hypot(*(proj - p).T)
+    ok = pos >= min_pos - 1e-6
+    idx = np.where(ok)[0]
+    if len(idx) == 0:  # линия впереди кончилась — берём глобально ближайшую точку
+        i = int(d.argmin())
+    else:
+        i = int(idx[np.argmin(d[idx])])
+    return float(d[i]), float(pos[i])
+
+
 def clip(poly: np.ndarray, start_m: float, end_m: float) -> np.ndarray:
     P = xy(poly[:, 0], poly[:, 1])
     cum = np.r_[0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
@@ -343,7 +367,7 @@ def main() -> None:
                     help="названия остановок из 2ГИС поверх существующего stop_names.json (ключ «lat,lon», 5 знаков)")
     ap.add_argument("--stop-names-base", type=Path, default=REPO / "backend/app/state/stop_names.json")
     ap.add_argument("--cache", type=Path, default=REPO / ".cache/2gis")
-    ap.add_argument("--samples", type=int, default=6, help="остановок на направление для определения маршрута")
+    ap.add_argument("--samples", type=int, default=20, help="остановок на направление для определения маршрута")
     ap.add_argument("--report", type=Path, default=None)
     args = ap.parse_args()
 
@@ -361,23 +385,14 @@ def main() -> None:
                                      low_memory=False)).dropna(subset=["lat"])
     current = json.loads(args.current.read_text(encoding="utf-8")) if args.current.exists() else {}
 
-    import features.tabular as tab
-    from features.tabular import gps_history, index_schedule, index_traffic
-    tab.HIST_BACK_S = 10 ** 8  # прибытия нужны за весь день, а не за последний час, как при прогнозе
-    raw_sched = pd.read_csv(args.dataset / "validate/schedule_plan.csv", parse_dates=["time_begin"])
-    TG = index_traffic(pd.read_csv(args.dataset / "validate/traffic.csv", parse_dates=["event_time"], low_memory=False))
-    SG = index_schedule(raw_sched)
-    day_end = int(raw_sched["time_begin"].max().value // 10**9) + 3600
-    arrivals_by_tr = {}
-    for tr_id in cat.routes:
-        if tr_id in TG and tr_id in SG:
-            h = gps_history(TG[tr_id], SG[tr_id], day_end)
-            arrivals_by_tr[tr_id] = {int(r[0]): int(r[3]) for r in h}  # позиция визита -> время прибытия, с
+    CONFIDENCE_MIN = 0.6  # доля опрошенных остановок, проголосовавших за один и тот же номер маршрута
+    COVERAGE_MIN = 0.9    # доля остановок, лежащих на обрезанной линии этого маршрута (<= 60 м)
 
     shapes: dict[str, dict[str, list]] = {}
     names: dict[str, dict] = {}
     platforms: dict[tuple[float, float], str] = {}   # (lat, lon) остановки 2ГИС -> название
     report = []
+    flagged: list[dict] = []  # ТС/направления, для которых НЕ нашли уверенное совпадение с реальным маршрутом
     for tr_id, route in sorted(cat.routes.items()):
         g = tele[tele.tr_id == tr_id]
         gps = xy(g.lat.values, g.lon.values) if len(g) > 50 else None
@@ -397,19 +412,40 @@ def main() -> None:
                         votes[r["id"]] += 1
                         info[r["id"]] = r
             dir_id = str(d["direction_id"])
-            row = {"tr_id": tr_id, "dir": dir_id, "stops": len(stops), "route": None, "coverage": 0.0}
+            stops_ll = np.array([[st["lat"], st["lon"]] for st in stops])
+            row = {"tr_id": tr_id, "dir": dir_id, "stops": len(stops), "samples": len(idx), "route": None, "coverage": 0.0}
             cur = current.get(str(tr_id), {}).get(dir_id)
             if cur and gps is not None:
                 row["far_current"] = round(far_share(np.array(cur), gps), 3)
+
             if not votes:
+                row["flag"] = "ни одна из опрошенных остановок не привязана ни к одному маршруту 2ГИС"
+                flagged.append(dict(row))
                 report.append(row)
-                if cur:
-                    shapes[str(tr_id)][dir_id] = cur
+                shapes[str(tr_id)][dir_id] = stops_ll.tolist()
+                print(row, flush=True)
                 continue
+
             rid, n = votes.most_common(1)[0]
-            row.update(route=info[rid]["name"], coverage=round(n / len(idx), 2),
+            coverage = n / len(idx)
+            row.update(route=info[rid]["name"], coverage=round(coverage, 2),
                        route_from=info[rid].get("from_name"), route_to=info[rid].get("to_name"))
-            # направление 2ГИС, ближайшее к нашим остановкам, и обрезка по первой/последней остановке
+
+            if coverage < CONFIDENCE_MIN:
+                row["flag"] = (f"неуверенно: только {n}/{len(idx)} опрошенных остановок голосуют за "
+                               f"«{info[rid]['name']}» — похоже, ТС не идёт по одному цельному реальному маршруту")
+                flagged.append(dict(row))
+                report.append(row)
+                shapes[str(tr_id)][dir_id] = cur if cur else stops_ll.tolist()
+                print(row, flush=True)
+                continue
+
+            # Маршрут определён уверенно — берём его линию 2ГИС КАК ЕСТЬ (она уже официальная геометрия по
+            # дорогам): выбираем направление 2ГИС, ближе всего проходящее мимо наших остановок (с корректным
+            # разворотом для рейсов «туда-обратно», см. line_for_stops), обрезаем по первой/последней остановке —
+            # и всё, без дальнейшей подгонки по GPS или OSRM. Раньше здесь ещё и «дошивали» линию по перегонам
+            # (2ГИС/GPS/OSRM вперемешку) — это и давало зигзаги и самопересечения там, где остановки лежат кучно
+            # (несколько заездов к одному узлу за один рейс): для каждого перегона источник выбирался независимо.
             S = xy([s["lat"] for s in stops], [s["lon"] for s in stops])
             rdirs = dg.route_directions(rid)
             for rd in rdirs:
@@ -418,35 +454,27 @@ def main() -> None:
                     if len(m) >= 2 and pf.get("name"):
                         platforms[(float(m[1]), float(m[0]))] = pf["name"].replace(" ", " ").split(" · ")[0]
             polys = [pl for pl in (parse_linestrings(rd) for rd in rdirs) if len(pl) >= 2]
-            stops_ll = np.array([[st["lat"], st["lon"]] for st in stops])
-            paths = (gps_segment_paths(tr_id, int(dir_id), stops, cat_schedules[tr_id], cat, TG[tr_id],
-                                       arrivals_by_tr.get(tr_id, {})) if tr_id in TG else None)
-            # Единая линия 2ГИС для всего направления (line_for_stops), а не отдельный кандидат на каждый перегон:
-            # раньше stitch() выбирал ближайшее направление 2ГИС для каждой пары соседних остановок независимо, и
-            # если для соседних перегонов «выигрывали» разные направления (в т.ч. параллельные полосы туда/обратно),
-            # линия дёргалась зигзагом на стыке. Теперь для всего направления заранее выбирается одна
-            # самосогласованная линия (с корректным разворотом для рейсов «туда-обратно»), и stitch() лишь решает,
-            # где по ней проехать как есть, а где — по-факту наверстать реальным треком (см. max_dev_m ниже).
-            base = line_for_stops(polys, S)
-            row["base_how"] = base[3] if base is not None else None
-            base_lines = [Line(base[0])] if base is not None and len(base[0]) >= 2 else []
-            line, mix = stitch(stops_ll, S, base_lines,
-                               Line(np.array(cur)) if cur and len(cur) >= 2 else None, paths,
-                               osrm_cache=args.cache.parent / "osrm")
-            if True:
-                cov = stop_coverage(line, S)
-                row.update(mix=mix, stop_coverage=round(cov, 2), points=len(line))
-                if gps is not None and len(line) >= 2:
-                    row["far_2gis"] = round(far_share(line, gps), 3)
-                use = len(line) >= 2 and cov >= 0.95 and \
-                    (cur is None or gps is None or row.get("far_2gis", 1) <= row.get("far_current", 1) + 0.02)
-                row["used"] = "2gis" if use else ("osrm" if cur else "stops")
-                if use:
-                    shapes[str(tr_id)][dir_id] = [[round(a, 6), round(b, 6)] for a, b in line]
-                elif cur:
-                    shapes[str(tr_id)][dir_id] = cur
+            found = line_for_stops(polys, S)
+            row["base_how"] = found[3] if found is not None else None
+            line = found[0] if found is not None and len(found[0]) >= 2 else None
+            cov = stop_coverage(line, S) if line is not None else 0.0
+            row["stop_coverage"] = round(cov, 2)
+            if line is not None and gps is not None:
+                row["far_2gis"] = round(far_share(line, gps), 3)
+
+            # Номер маршрута фиксируем уже сейчас — голосование прошло уверенно (см. проверку выше), это не
+            # зависит от того, дотянется ли обрезанная линия 2ГИС до всех наших остановок.
             names.setdefault(str(tr_id), {})[dir_id] = {"route": row["route"], "from": row.get("route_from"),
                                                         "to": row.get("route_to"), "coverage": row["coverage"]}
+            if line is None or cov < COVERAGE_MIN:
+                row["flag"] = (f"маршрут «{info[rid]['name']}» найден уверенно ({n}/{len(idx)}), но его линия "
+                               f"2ГИС проходит мимо наших остановок только на {round(cov, 2)} — расхождение в "
+                               f"данных остановок, а не в определении номера")
+                flagged.append(dict(row))
+                shapes[str(tr_id)][dir_id] = cur if cur else stops_ll.tolist()
+            else:
+                row["used"] = "2gis"
+                shapes[str(tr_id)][dir_id] = [[round(a, 6), round(b, 6)] for a, b in line]
             report.append(row)
             print(row, flush=True)
 
@@ -480,6 +508,13 @@ def main() -> None:
     if args.report:
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"запросов к 2ГИС в этом запуске: {dg.calls}; линий: {sum(len(v) for v in shapes.values())} -> {args.out}")
+    if flagged:
+        print(f"\n=== {len(flagged)} направлений БЕЗ уверенного совпадения с реальным маршрутом 2ГИС "
+              f"(линия для них — старая/прямая по остановкам, не 2ГИС): ===")
+        for row in flagged:
+            print(f"  ТС {row['tr_id']} направление {row['dir']}: {row['flag']}")
+    else:
+        print("все направления уверенно совпали с реальным маршрутом 2ГИС")
 
 
 if __name__ == "__main__":
