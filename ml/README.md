@@ -4,7 +4,7 @@
 
 Задача — регрессия `target_delay_s` (секунды, знак важен) на первой остановке в окне `(T+10, T+15]` мин. Метрика — MAE, скор в [0,1]. Baseline `prediction = cur_dev_s` даёт ≈ 0.40 (3 балла). Цель — ≥ 0.70 (6 баллов). **Текущий локальный score ≈ 1.0**, платформа подтвердила.
 
-Подробнее про задачу и контракты — в корневом [`ARCHITECTURE_AND_ROLES.md`](../ARCHITECTURE_AND_ROLES.md).
+API сервиса — [docs.mowtransit.ru/inference_api.html](https://docs.mowtransit.ru/inference_api.html) и Swagger `http://localhost:8001/docs`.
 
 ## Структура
 
@@ -25,7 +25,7 @@ ml/
 │   └── eval.py                MAE + score-функция как в ТЗ
 ├── configs/
 │   └── catboost.json          гиперы основного CatBoost-конфига
-├── artifacts/                 веса, ONNX, meta (в .gitignore)
+├── artifacts/                 финальные модели сервиса catboost_* (в git); кэши и ONNX — нет
 ├── notebooks/                 EDA и эксперименты
 ├── Dockerfile
 └── requirements.txt

@@ -2,8 +2,7 @@
 
 The ML service is faked with ``httpx.MockTransport``. Against the real service (locally trained model),
 payloads built from vehicle state reproduce the batch submission within 0.1 s on 104/151 validate points;
-the rest differ because the service's online feature path isn't byte-identical to the batch pipeline —
-its own reference payloads (``src/csv_replayer.py``) show the same kind of gap.
+the rest differ because the service's online feature path isn't byte-identical to the batch pipeline.
 """
 
 from __future__ import annotations

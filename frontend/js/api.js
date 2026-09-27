@@ -1,4 +1,4 @@
-// Живой источник данных: REST + WebSocket бэкенда (раздел 7.2 ARCHITECTURE_AND_ROLES.md).
+// Живой источник данных: REST + WebSocket бэкенда (контракт — frontend/README.md и Swagger backend).
 // Интерфейс тот же, что у мока: getRoutes / getVehicles / getAlerts / getMetrics / whatif / start.
 window.App = window.App || {};
 

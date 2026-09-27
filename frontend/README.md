@@ -49,7 +49,7 @@ frontend/
 
 ## Что ждём от бэкенда (контракт)
 
-Базовый контракт — раздел 7.2 в `ARCHITECTURE_AND_ROLES.md`. Уточнения со стороны фронта:
+Полная спецификация — Swagger backend (`/docs`, https://api.mowtransit.ru/docs). Главное для фронта:
 
 **`GET /routes`**
 ```json

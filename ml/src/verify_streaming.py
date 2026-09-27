@@ -2,6 +2,7 @@
 
 Задача — доказать, что submission.csv можно воспроизвести стриминг-путём, а не только батчем.
 Для каждой точки из validate/points.csv:
+
   1) фильтруем validate/traffic.csv по event_time ≤ T и tr_id (эмулируем историю пингов до T),
   2) берём слайс validate/schedule_plan.csv по tr_id,
   3) вызываем features/from_stream.build_features_online и предиктим ансамблем.

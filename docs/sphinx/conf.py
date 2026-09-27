@@ -75,7 +75,6 @@ language = "ru"
 
 # -- Options for HTML output -------------------------------------------------
 html_theme = "sphinx_rtd_theme"
-html_static_path = ["_static"]
 html_title = "Предиктор задержек Москвы"
 
 # Не падать на предупреждениях от viewcode для замоканных модулей

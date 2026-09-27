@@ -1,7 +1,6 @@
 # backend
 
 Production backend: NDTP ingest → schedule matching → ML orchestration → dispatcher API.
-The old simulator-based demo backend lives in `../mock_backend` and is not part of this.
 
 ## Plan
 
@@ -20,7 +19,7 @@ Built piece by piece; each piece is tested before the next starts.
 | 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | done |
 | 10 | Deploy: nginx vhosts (`api.` / `app.` / `docs.` mowtransit.ru), TLS, compose | done — [`infra/deploy/`](../infra/deploy/README.md) |
 
-## Layout (so far)
+## Layout
 
 ```
 app/
@@ -65,7 +64,6 @@ scripts/
 tests/
   fixtures/       raw TCP captures from ndtp-telemetry-emulator:1.0 (see test_ndtp_protocol.py);
                   dataset/validate/traffic.csv is synthetic (real format and IDs, made-up positions)
-src/csv_replayer.py   kept from the old backend: reference for the ML /predict payload
 ```
 
 ## Running
@@ -74,15 +72,15 @@ Production (the VPS: `api.` / `app.` / `docs.` / `ndtp.` mowtransit.ru): see [`i
 
 | What | Command | Ports |
 |---|---|---|
-| The service (Docker) | `docker compose --profile dev up -d --build backend-dev` (repo root) | API `:8010` → 8000, NDTP `:9201` |
+| The whole stack (Docker) | `docker compose up -d --build` (repo root) | API `:8000`, NDTP `:9201` |
 | The service (local) | `DATASET_DIR=<dataset> uvicorn app.main:app --workers 1` (from `backend/`) | API `:8000`, NDTP `:9201` |
 | NDTP only, for debugging | `python -m app.ndtp` (from `backend/`) | NDTP `:9201` |
 
 Always one worker: the NDTP listener and in-memory state live in the process. Swagger: `/docs`.
-`backend-dev` doesn't depend on `ml` in compose on purpose — without ML the backend degrades, it doesn't wait.
+`backend` doesn't depend on `ml` in compose on purpose — without ML the backend degrades, it doesn't wait.
 
 Compose mounts the dataset (the organizers' archive, unpacked) from `./dataset`; elsewhere set
-`DATASET_HOST_DIR=/path/to/dataset`. Without a dataset the service runs but reports `degraded`: NDTP
+`DATASET_DIR=/path/to/dataset`. Without a dataset the service runs but reports `degraded`: NDTP
 fixes can't be matched to vehicles.
 
 ### Time
@@ -142,7 +140,7 @@ risk sigmoid), marked `source: fallback`, reports `degraded`, and retries ML aft
 Checked against a locally trained model (2026-09-27): with the organizers' `cur_dev_s` substituted,
 backend-built payloads reproduce the batch `submission.csv` within 0.1 s on 104/151 validate points (mean
 gap 1.6 s). The rest is inside the ML service — its online feature path isn't byte-identical to the batch
-pipeline; its own reference payloads (`src/csv_replayer.py`) differ from the batch too. Live on the real
+pipeline. Live on the real
 day: 100% of forecasts inside the horizon, ~21 ms per forecast in batches.
 
 ## Alerts
@@ -198,8 +196,9 @@ against it unchanged (`index.html?mode=live&api=…&ws=…`), checked in a brows
 
 - **Routes**: the dataset has no route ids, so each scheduled vehicle is a "route", and every distinct trip
   shape (first stop → last stop) is a direction with its own line. The map projects the vehicle and its
-  schedule onto the line of the vehicle's *current* trip. Lines are stop-to-stop straight segments (no road
-  geometry in the dataset).
+  schedule onto the line of the vehicle's *current* trip. The dataset has no road geometry: lines follow the
+  streets from `app/api/route_shapes.json`, and `route_names.json` gives each vehicle its real route number
+  (both built from 2GIS / OSRM by `infra/build_route_shapes_2gis.py`); without them, stop-to-stop segments.
 - **Vehicles**: position, current deviation (`delay_now_sec`), the model's forecast for the target stop
   (`delay_pred_sec`, `risk_score`, cause, recommendation).
 - **Schedule** of the current trip: actual (GPS-detected) arrivals behind the vehicle; the target stop with
@@ -212,13 +211,3 @@ against it unchanged (`index.html?mode=live&api=…&ws=…`), checked in a brows
 Always empty, by design: `GET /metrics/bunching` (needs vehicles sharing a route and direction; the dataset
 has no route relations) and `GET /routes/{id}/signals` (no traffic-light data). Both return `[]` rather than
 404 so the dashboard's widgets stay quiet.
-
-### Frontend bug (for Вероника)
-
-`frontend/js/app.js:305` calls `source.getSignals(r.route_id).forEach(...)` synchronously. In `mock.js`
-`getSignals` is synchronous; in `api.js` it's `async`, so in live mode this throws
-`TypeError: source.getSignals(...).forEach is not a function` on **every** `vehicle.update` — before
-`renderVehicle()` runs — and also during the initial load (`app.js:728`: "Не удалось загрузить начальные
-данные"). The dashboard recovers from the WebSocket stream, but the selected vehicle's card doesn't refresh
-from it. Smallest fix: remove `getSignals` from the live source in `frontend/js/api.js` (live mode has no
-signals, and `app.js` already checks `if (source.getSignals)`).

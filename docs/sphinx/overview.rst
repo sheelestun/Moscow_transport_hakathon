@@ -18,20 +18,21 @@
 - Дополнительно контролируются медиана, 90-й перцентиль абсолютной ошибки
   и разрезы по маршруту/времени суток (см. ``ml/src/metrics_slices.py``).
 - Валидация — proxy K-fold + holdout + LOVO (leave-one-vehicle-out).
-- Целевой уровень качества фиксируется в ``ARCHITECTURE_AND_ROLES.md §12``.
+- Скор платформы ``max(0, min(1, (mae_zero − MAE) / (mae_zero − MAE_TARGET)))``; у финального ансамбля ≈ 1.0.
 
 Роли команды
 ------------
 
 - **Степан + Фёдор** — ML: фичи, обучение, инференс, валидация.
-- **Даниил Герман** — backend: сервис FastAPI, интеграция с NDTP-стримом.
-- **Вероника** — frontend: карта, таблица прогнозов, дэшборд.
+- **Даниил Герман** — backend: приём NDTP, сопоставление с расписанием, алерты, API, развёртывание.
+- **Вероника** — frontend: карта, карточка инцидента, What-if, дашборд.
 - **Даниил Шелестов** — аналитика: разрезы, метрики качества, отчётность.
 
 Ссылки
 ------
 
-- `Архитектура и роли <../../ARCHITECTURE_AND_ROLES.md>`_ — единый источник правды
-  по контрактам, ролям и критериям приёмки.
-- `Корневой README <../../README.md>`_ — быстрый старт, структура репозитория.
-- `README ML-модуля <../../ml/README.md>`_ — детали обучения и инференса.
+- :doc:`getting_started` — как запустить систему, подать поток и где смотреть результаты.
+- `Корневой README <https://github.com/sheelestun/Moscow_transport_hakathon#readme>`_ — запуск и структура репозитория.
+- `README ML-модуля <https://github.com/sheelestun/Moscow_transport_hakathon/blob/main/ml/README.md>`_ — обучение и инференс.
+- `Замеры производительности <https://github.com/sheelestun/Moscow_transport_hakathon/blob/main/ml/PERFORMANCE.md>`_ — точность, latency, деградация.
+- `README backend <https://github.com/sheelestun/Moscow_transport_hakathon/blob/main/backend/README.md>`_ — NDTP, признаки, алерты, нагрузочный тест.

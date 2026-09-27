@@ -42,9 +42,9 @@ git clone <repo-url> /srv/mowtransit/repo && cd /srv/mowtransit/repo
 
 - **Dataset**: unpack the organizers' archive into `dataset/` (so `dataset/validate/traffic.csv` exists), or point
   `DATASET_DIR` in `.env` elsewhere. Without it the backend runs but can't match telemetry to vehicles.
-- **Model**: put the ML team's artifacts (`catboost_meta.json`, `catboost_seed*.cbm`, `catboost_quantiles.cbm`,
-  `catboost_classes.cbm`, `catboost_uncertainty.json`) into `ml/artifacts/`, or set `ML_ARTIFACTS_DIR`. Without
-  them the ML container doesn't start and the backend forecasts the baseline (reported in `/health`).
+- **Model**: the final models (`catboost_*` and `catboost_gps_*`) are in git under `ml/artifacts/`; to serve
+  others, set `ML_ARTIFACTS_DIR`. Without models the ML container doesn't start and the backend forecasts the
+  baseline (reported in `/health`).
 
 ## 3. Configure and start
 
@@ -81,7 +81,7 @@ Build the Sphinx site into the folder `docs.mowtransit.ru` serves:
 sudo mkdir -p /var/www/mowtransit-docs && sudo chown $USER /var/www/mowtransit-docs
 cd /srv/mowtransit/repo
 docker run --rm -v "$PWD":/repo -v /var/www/mowtransit-docs:/out -w /repo/docs/sphinx python:3.12-slim \
-    sh -c "pip install -q sphinx sphinx-rtd-theme && sphinx-build -q -b html . /out"
+    sh -c "pip install -q sphinx sphinx-rtd-theme && sphinx-build -q -b html -d /tmp/doctrees . /out"
 ```
 
 ## 6. Check

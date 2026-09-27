@@ -30,7 +30,7 @@ def build_requests(dataset: Path, history_min: int = 90, send_schedule: bool = F
                    cur_dev_mode: str = "official") -> list[dict]:
     """Запросы в формате контракта сервиса: пакеты телеметрии ТС за ``history_min`` минут до T (0 — все до T).
 
-    ``send_schedule`` — передавать плановое расписание ТС в запросе (как backend/csv_replayer); иначе сервис
+    ``send_schedule`` — передавать плановое расписание ТС в запросе (как это делает backend); иначе сервис
     берёт план из SCHEDULE_PATH.
     """
     pts = pd.read_csv(dataset / "validate" / "points.csv", parse_dates=["T", "target_time_begin"])

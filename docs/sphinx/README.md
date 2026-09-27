@@ -1,24 +1,13 @@
-# Sphinx documentation
+# Sphinx-документация
 
-Документация по ML-модулю проекта «Предиктор задержек Москвы».
+Исходники сайта https://docs.mowtransit.ru: инструкция для жюри (`getting_started.rst`), ML, API ML-ядра, backend и
+справочник по коду (autodoc по `ml/src` и `backend/app`).
 
 ## Сборка
 
 ```bash
-cd docs/sphinx
 pip install sphinx sphinx-rtd-theme
-make html
+make -C docs/sphinx html        # → docs/sphinx/_build/html/index.html
 ```
 
-Результат — `docs/sphinx/_build/html/index.html`. Открыть в браузере:
-
-```bash
-xdg-open _build/html/index.html   # Linux
-open _build/html/index.html       # macOS
-```
-
-## Очистка
-
-```bash
-make clean
-```
+На сервере сайт собирается в `/var/www/mowtransit-docs` — команда в [`infra/deploy/README.md`](../../infra/deploy/README.md), раздел «Docs».
