@@ -8,6 +8,8 @@ A planned gap longer than ``TRIP_GAP_S`` between consecutive visits is a termina
 from __future__ import annotations
 
 import csv
+import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,6 +22,9 @@ from .geo import dist_m, epoch_s
 TRIP_GAP_S = 300  # same as ml/src/features/tabular.py
 
 _POINT = re.compile(r"POINT \(([-\d.]+) ([-\d.]+)\)")
+STOP_NAMES = Path(__file__).with_name("stop_names.json")
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,12 +72,28 @@ class VehicleSchedule:
         return i if i < len(self.visits) else None
 
 
+def _load_stop_names() -> dict[tuple[float, float], str]:
+    """OSM-derived names for stops the dataset left blank. Key is (lat, lon) rounded to 5dp.
+    Built once by ``infra/build_stop_names.py`` from Overpass; missing file → no fallback."""
+    if not STOP_NAMES.exists():
+        return {}
+    try:
+        raw = json.loads(STOP_NAMES.read_text())
+        out = {tuple(float(x) for x in k.split(",")): v for k, v in raw.items()}
+        log.info("stop_names.json: %d названий подтянуто из OSM", len(out))
+        return out
+    except (OSError, ValueError) as e:
+        log.warning("stop_names.json unreadable (%s) — leaving unnamed stops as-is", e)
+        return {}
+
+
 def load_schedule(path: Path) -> dict[int, VehicleSchedule]:
     rows_by_tr: dict[int, list[dict]] = {}
     with path.open(newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             rows_by_tr.setdefault(int(row["tr_id"]), []).append(row)
 
+    stop_names = _load_stop_names()
     out: dict[int, VehicleSchedule] = {}
     for tr_id, rows in rows_by_tr.items():
         rows.sort(key=lambda r: r["time_begin"])
@@ -90,8 +111,10 @@ def load_schedule(path: Path) -> dict[int, VehicleSchedule]:
             m = _POINT.match(r["geom"])
             if m is None:
                 raise ValueError(f"{path}: bad geom {r['geom']!r} for tt_action_item_id {r['tt_action_item_id']}")
-            visits.append(StopVisit(pos=pos, stop_id=int(r["tt_action_item_id"]), plan=plan, lon=float(m[1]),
-                                    lat=float(m[2]), manual_fill=r["manual_fill"] == "True",
-                                    name=r["building_address"], geom=r["geom"], trip=trip, idx_in_trip=idx))
+            lon, lat = float(m[1]), float(m[2])
+            name = r["building_address"] or stop_names.get((round(lat, 5), round(lon, 5)), "")
+            visits.append(StopVisit(pos=pos, stop_id=int(r["tt_action_item_id"]), plan=plan, lon=lon, lat=lat,
+                                    manual_fill=r["manual_fill"] == "True", name=name, geom=r["geom"],
+                                    trip=trip, idx_in_trip=idx))
         out[tr_id] = VehicleSchedule(tr_id, visits)
     return out

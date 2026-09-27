@@ -135,14 +135,20 @@ window.App = window.App || {};
           el.addEventListener("mouseenter", () => showPopup(v.vehicle_id));
           el.addEventListener("mouseleave", () => popup.remove());
           const marker = new maplibregl.Marker({ element: el }).setLngLat([v.lon, v.lat]).addTo(map);
-          m = { marker, el, from: [v.lon, v.lat], to: [v.lon, v.lat], t0: now, data: v };
+          m = { marker, el, from: [v.lon, v.lat], to: [v.lon, v.lat], t0: now, dur: 1000, lastAt: now, data: v };
           markers.set(v.vehicle_id, m);
-        } else {
-          // плавно едем из текущей точки в новую за 1 секунду
+        } else if (v.lon !== m.to[0] || v.lat !== m.to[1]) {
+          // Растягиваем анимацию на реальный интервал между апдейтами (traffic.csv шлёт пинги
+          // редко и неравномерно — 3-15с при CLOCK_SPEED=5). Так маркер едет всё это время,
+          // а не «стоит-прыгает». Первый апдейт после создания: fallback 1 с. Клемпим [0.4с..15с],
+          // чтобы NDTP-шторм (100Гц) не превращал маркер в желе, а редкий пинг не тянулся минуту.
+          const dt = Math.max(400, Math.min(15000, now - m.lastAt));
           const cur = m.marker.getLngLat();
           m.from = [cur.lng, cur.lat];
           m.to = [v.lon, v.lat];
           m.t0 = now;
+          m.dur = dt;
+          m.lastAt = now;
         }
         m.data = v;
         m.el.style.display = isShown(v.route_id) ? "" : "none";
@@ -394,10 +400,12 @@ window.App = window.App || {};
     popup._vid = id;
   }
 
-  // Плавное движение маркеров между обновлениями
+  // Плавное движение маркеров между обновлениями — линейно интерполируем от m.from к m.to
+  // за m.dur мс (см. updateVehicles). Обновляем DOM только пока анимация идёт: когда k=1
+  // застыл — раз выставили финальную позицию и до следующего апдейта не трогаем.
   function animate(t) {
     for (const m of markers.values()) {
-      const k = Math.min(1, (t - m.t0) / 1000);
+      const k = Math.min(1, (t - m.t0) / m.dur);
       if (k < 1 || m._k !== 1) {
         m.marker.setLngLat([m.from[0] + (m.to[0] - m.from[0]) * k, m.from[1] + (m.to[1] - m.from[1]) * k]);
         m._k = k;
