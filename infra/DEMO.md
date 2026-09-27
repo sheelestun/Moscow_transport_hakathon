@@ -1,107 +1,90 @@
-# E2E-демо: NDTP-эмулятор → backend → ML → фронт
+# Инструкция для жюри: как проверить систему
 
-Полный пайплайн одной командой + сценарий показа для жюри.
+Система: NDTP-поток → backend (приём и разбор NDTP, сопоставление с расписанием, прибытия по GPS, выбор целевой
+остановки через 10–15 мин, алерты) → ML-сервис (CatBoost: задержка, вероятность, интервал, причина) → дашборд.
 
-## Требования
+## 1. Где смотреть (развёрнуто на сервере)
 
-- Docker + Docker Compose v2
-- ~4 ГБ RAM свободных
-- `dataset/` в корне репо (см. `ml/README.md`, ссылка на Яндекс.Диск)
-- OCI-архив эмулятора: `dataset/ndtp-telemetry-emulator.tar` — организаторы прислали в чате
+| Что | Адрес |
+|---|---|
+| Дашборд диспетчера | https://app.mowtransit.ru |
+| API backend + Swagger | https://api.mowtransit.ru/docs |
+| Документация (код, ML, backend) | https://docs.mowtransit.ru |
+| NDTP-порт для терминалов / эмулятора | `ndtp.mowtransit.ru:9201` (TCP) |
 
-## Быстрый старт (60 секунд)
+ML-сервис наружу не опубликован — его вызывает только backend; его состояние видно в `/health` backend'а.
+
+## 2. Проверка за 5 минут
+
+1. **Дашборд** https://app.mowtransit.ru: карта, ТС с цветом риска (зелёный / жёлтый / красный), клик по ТС —
+   карточка: прогноз опоздания на остановке через 10–15 мин, интервал, причина, рекомендация.
+2. **Здоровье системы** — `GET https://api.mowtransit.ru/health`:
+   - `ndtp.units_connected`, `ndtp.fixes_total`, `fixes_dropped` — живой NDTP-поток и потери;
+   - `predictor.ml_available: true`, `predictions_ml`, `predictions_fallback` — прогнозы от ML;
+   - **`predictor.horizon_ok_share`** — доля прогнозов, у которых целевая остановка в окне (T+10, T+15] мин
+     (критерий 2; на сервере 27.09 — 1.0 на 700+ прогнозах);
+   - `alerts.raised / verified / precision / mae_verified_s` — алерты и их сверка с фактическим прибытием
+     (алерт выдаётся до события и потом проверяется фактом).
+3. **Прогнозы** — `GET /predictions`: у каждого ТС `T`, целевая остановка, `lead_s`, `horizon_ok`,
+   `delay_pred_s`, `risk_level`, `causes`, `recommendation_text`.
+4. **Алерты** — `GET /alerts?active=true`; прибытия по GPS — `GET /state/vehicles/{tr_id}/arrivals`.
+5. **Метрики модели** — `GET /metrics/model` (MAE по схемам валидации, живая latency, покрытие интервала).
+
+Часы демо: датасет — один день (2026-01-06); backend проигрывает его синхронно с текущим московским временем
+суток (`GET /clock`).
+
+## 3. Подать свой NDTP-поток через эмулятор организаторов
+
+Эмулятор в режиме `autoGenerate` шлёт случайное блуждание со случайными `unitId`, которых нет в датасете: backend
+их примет и разберёт (растут `ndtp.fixes_total` и `ingest.unknown_units`), но сопоставить с расписанием не сможет.
+Чтобы увидеть содержательный поток, мы проигрываем через эмулятор **настоящие треки 13 ТС** из датасета:
 
 ```bash
-# 1. Один раз — подтягиваем эмулятор из OCI-архива
 docker load -i dataset/ndtp-telemetry-emulator.tar
+docker run -d --rm -p 18080:18080 --name ndtp-emu ndtp-telemetry-emulator:1.0
+python infra/emulator_replay.py --dataset ./dataset --emu-url http://localhost:18080 \
+    --target-host ndtp.mowtransit.ru --target-port 9201 --clock-url https://api.mowtransit.ru
+```
 
-# 2. Поднимаем весь стек
+Через минуту в `GET /ingest/vehicles` эти ТС идут с источником NDTP. Когда поток останавливается, через 60 с backend
+сам переключает их на проигрывание `traffic.csv` — сервис не падает. Особенности эмулятора — `ml/EMULATOR.md`.
+
+## 4. Проверка надёжности
+
+- **ML недоступен** → backend выдаёт прогноз по текущему отклонению (`source: fallback`), дашборд работает,
+  после возврата ML — снова прогнозы модели.
+- **Обрыв NDTP** → переход на проигрывание датасета, восстановление после реконнекта.
+- **Плохие данные** в ML (нет координат, ТС далеко от маршрута, пакеты позже T) → ответ со статусом
+  `no_telemetry` / `off_route`, пакеты из будущего отбрасываются; замеры — `ml/PERFORMANCE.md`.
+
+## 5. Запуск у себя
+
+Полный стек (ML + backend + дашборд + Postgres) — тот же compose, что на сервере:
+
+```bash
+# из корня репозитория; dataset/ — распакованный архив организаторов, ml/artifacts/ — модели (train_catboost.py --fit)
+cd infra/deploy
+cp .env.example .env
+# в .env для локального запуска:
+#   POSTGRES_PASSWORD=<любой>
+#   PUBLIC_API_BASE=http://localhost:8000
+#   PUBLIC_WS_URL=ws://localhost:8000/ws
+#   CORS_ORIGINS=["http://localhost:3000"]
+#   CLOCK_START=2026-01-06T08:00:00        # утренний час пик
 docker compose up -d --build
-
-# 3. Ждём health (обычно 20-30 сек)
-docker compose ps
 ```
 
-Все зелёные — открываем фронт:
+Дашборд — http://localhost:3000, API — http://localhost:8000/docs, NDTP — `localhost:9201`. Подробности деплоя —
+`infra/deploy/README.md`, backend — `backend/README.md`, ML — `ml/README.md`.
 
-- **Фронт:** http://localhost:3000
-- **Backend API:** http://localhost:8000/docs (Swagger)
-- **ML API:** http://localhost:8001/docs (Swagger)
-- **NDTP эмулятор:** http://localhost:18080/api/cells
+> Корневой `docker-compose.yml` по умолчанию поднимает `mock_backend` — ранний симулятор без NDTP (оставлен для
+> разработки фронта). Для проверки настоящей системы используйте `infra/deploy/docker-compose.yml`.
 
-## Что смотрим на экране жюри
+## 6. Что где описано
 
-Порядок нажатий:
-
-| Шаг | Что делаем | Что покажет |
-|---|---|---|
-| 1 | Открыть http://localhost:3000 | 24 ТС на 6 маршрутах, часть красных (`risk ≥ 0.7`) |
-| 2 | Кликнуть по ТС | Карточка: `delay_pred_sec`, `reason_pattern`, `top_features`, `confidence` |
-| 3 | Открыть боковую панель «Алерты» | Список активных инцидентов, у каждого — `recommendation` |
-| 4 | В карточке ТС нажать «Расписание» | Прошедшие остановки с `delay_sec`, ближайшая с `is_target=true` в окне (T+10, T+15] |
-| 5 | Открыть «What-if», выбрать `detour` для маршрута | POST `/whatif` — сравнение `red_before/red_after`, список ТС |
-| 6 | Нажать «Применить» | `apply=true` → эффект вносится в симуляцию, `delay_pred` у ТС падает на следующих тиках |
-| 7 | Показать `GET /metrics/model` в Swagger backend | `mae_test_s ≈ 43.7`, `score_estimate = 1.0`, `latency_ms_p50 ≈ 1.6ms` |
-| 8 | Обрыв связи: остановить backend `docker compose stop backend`, показать `status: degraded` во фронте, потом снова `up` | Тест критерия «надёжность» из ТЗ |
-
-## Проверка вручную (без фронта)
-
-```bash
-# Активные ТС и алерты
-curl -s http://localhost:8000/vehicles | jq 'length'
-curl -s http://localhost:8000/alerts?active=true | jq
-
-# Расписание одного ТС
-VID=$(curl -s http://localhost:8000/vehicles | jq -r '.[0].vehicle_id')
-curl -s http://localhost:8000/vehicles/$VID/schedule | jq
-
-# What-if для маршрута М1
-curl -s -X POST http://localhost:8000/whatif \
-  -H "Content-Type: application/json" \
-  -d '{"scenario":"detour","route_id":"М1"}' | jq '.summary'
-
-# WebSocket (websocat или wscat)
-websocat ws://localhost:8000/ws
-```
-
-## Реальный NDTP-поток через эмулятор
-
-Эмулятор шлёт TCP-поток в backend, у нас MVP-backend его не парсит (это работа
-Даниила Германа). Пока пайплайн NDTP → backend не готов, используем два обходных пути:
-
-- **Замена телеметрии из dataset:** `python backend/src/csv_replayer.py --dataset ./dataset --split validate --ml-url http://localhost:8001` — 151 точка validate → POST /predict.
-- **Эмулятор как источник трафика в ML напрямую** (для проверки live-режима):
-  `python infra/emulator_replay.py --dataset ./dataset` — реальные треки 13 ТС из
-  `validate/traffic.csv` льются через эмулятор на условный listener; ML отвечает
-  `data_status: live` (см. `ml/EMULATOR.md`).
-
-## Остановка
-
-```bash
-docker compose down          # остановить контейнеры, volume оставить
-docker compose down -v       # с volume (postgres-data)
-```
-
-## Как оно устроено
-
-```
-NDTP-эмулятор (Java Spring Boot)
-   │ TCP:5555 (пока не разбираем в MVP)
-   ▼
-Backend (FastAPI :8000)
-   • симуляция 24 ТС на 6 маршрутах (тот же shape, что у mock.js)
-   • REST /routes /vehicles /alerts /schedule /whatif /metrics/model
-   • WebSocket /ws → фронт (vehicle.update, alert.new, alert.verified)
-   │ HTTP /whatif/predict
-   ▼
-ML (FastAPI :8001)
-   • CatBoost-ансамбль, /predict + /whatif/predict
-   • /metrics/model — MAE, score, latency
-   │
-Frontend (nginx :3000)
-   • MapLibre + сайдбар + What-if
-```
-
-MVP-заглушка backend **не парсит NDTP** — держит симуляцию в памяти и зовёт ML
-через service-name `ml`. Как только Даниил Герман закончит парсер и постгресный
-слой, replace: движение ТС читается из потока, а не из симулятора.
+| Документ | О чём |
+|---|---|
+| `ml/README.md`, `ml/PERFORMANCE.md` | модель, признаки, валидация, скорость и надёжность ML |
+| `ml/EMULATOR.md` | эмулятор NDTP, проигрывание настоящих треков, поведение ML на потоке |
+| `ml/DATASET_STATS.md` | статистика датасета и ключевые находки |
+| `backend/README.md`, `infra/deploy/README.md` | backend и развёртывание |

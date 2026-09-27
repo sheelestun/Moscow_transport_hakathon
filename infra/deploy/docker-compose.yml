@@ -19,6 +19,9 @@ services:
       - ${ML_ARTIFACTS_DIR:-../../ml/artifacts}:/app/artifacts:ro
     environment:
       ML_MODEL_VERSION: ${ML_MODEL_VERSION:-catboost-ensemble}
+      # Как считана подсказка cur_dev_s, которую шлёт backend: gps — задержка на последнем GPS-прибытии (так её
+      # считает backend на потоке) -> модель, обученная на такой подсказке (catboost_gps_*). official — как в датасете.
+      ML_DEFAULT_CUR_DEV_MODE: ${ML_DEFAULT_CUR_DEV_MODE:-official}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
       interval: 30s

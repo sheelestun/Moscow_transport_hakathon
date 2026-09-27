@@ -46,6 +46,8 @@ STATS_DIR = Path(os.environ.get("ML_STATS_DIR", Path(__file__).resolve().parents
 SCHEDULE_PATH = Path(os.environ.get("SCHEDULE_PATH",
                                     Path(__file__).resolve().parents[2] / "dataset" / "validate" / "schedule_plan.csv"))
 MODEL_VERSION_ENV = os.environ.get("ML_MODEL_VERSION")
+# режим подсказки по умолчанию: на сервере с живым потоком — gps (так считает backend), для сабмита — official
+DEFAULT_CUR_DEV_MODE = os.environ.get("ML_DEFAULT_CUR_DEV_MODE", "official")
 RISK_MID_SEC = float(os.environ.get("ML_RISK_MID_SEC", 120.0))
 RISK_SLOPE_SEC = float(os.environ.get("ML_RISK_SLOPE_SEC", 60.0))
 STALE_AFTER_S = 180  # нет свежих координат дольше — данные «устарели», уверенность снижаем
@@ -98,6 +100,10 @@ class PredictRequest(BaseModel):
                                            description="Пинги NDTP; пакеты позже T сервис отбрасывает")
     schedule: list[ScheduleStop] = Field(default_factory=list,
                                          description="Плановое расписание ТС; пусто — из SCHEDULE_PATH")
+    cur_dev_mode: Optional[str] = Field(None, pattern="^(official|gps)$",
+                                        description="как посчитана cur_dev_s: official — как в датасете (для сабмита); "
+                                                    "gps — задержка на последнем прибытии по GPS, как считает backend "
+                                                    "(нет прибытий -> 0). Не задано — ML_DEFAULT_CUR_DEV_MODE (official)")
 
 
 class BatchRequest(BaseModel):
@@ -138,6 +144,10 @@ class PredictResponse(BaseModel):
     data_status: str = Field("live", description="live / stale / off_route / no_telemetry / fallback")
     horizon_ok: Optional[bool] = Field(None, description="целевая остановка в окне (T+10, T+15] мин — критерий горизонта")
     off_route_m: Optional[float] = Field(None, description="расстояние от ТС до ближайшей своей остановки (план ±1 ч), м")
+    critical_trip: Optional[str] = Field(None, description="opening / closing — первый или последний рейс ТС за день: "
+                                                           "опоздание на них критично для перевозчика")
+    catchup_speed_kmh: Optional[float] = Field(None, description="средняя скорость, с которой ТС успеет к плану (при опоздании)")
+    cur_dev_mode: str = "official"
     latency_ms: float = 0.0
 
 
@@ -151,6 +161,8 @@ class HealthResponse(BaseModel):
     n_features: int
     model_version: str
     uncertainty_models: bool = False
+    gps_models: bool = False
+    default_cur_dev_mode: str = "official"
     vehicles_in_schedule: int = 0
 
 
@@ -189,6 +201,29 @@ class WhatIfResponse(BaseModel):
 # ------------------------------------------------------------------ модели и метрики
 
 
+class ModelSet:
+    """Комплект моделей одного режима подсказки: ансамбль + интервал + вероятности."""
+
+    def __init__(self, prefix: str) -> None:
+        meta_path = ARTIFACTS_DIR / f"{prefix}meta.json"
+        if not meta_path.exists():
+            raise RuntimeError(f"meta не найден: {meta_path}. Сначала запусти train_catboost.py --fit")
+        self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.models = [CatBoostRegressor().load_model(str(ARTIFACTS_DIR / f"{prefix}seed{i}.cbm"))
+                       for i in range(self.meta["n_models"])]
+        self.q: Optional[CatBoostRegressor] = None
+        self.clf: Optional[CatBoostClassifier] = None
+        self.unc: dict = {}
+        if all((ARTIFACTS_DIR / f"{prefix}{f}").exists() for f in ("quantiles.cbm", "classes.cbm", "uncertainty.json")):
+            self.q = CatBoostRegressor().load_model(str(ARTIFACTS_DIR / f"{prefix}quantiles.cbm"))
+            self.clf = CatBoostClassifier().load_model(str(ARTIFACTS_DIR / f"{prefix}classes.cbm"))
+            self.unc = json.loads((ARTIFACTS_DIR / f"{prefix}uncertainty.json").read_text())
+
+    @property
+    def version(self) -> str:
+        return self.meta.get("model_version", "catboost-ensemble-v1")
+
+
 class State:
     """Всё, что сервис держит в памяти. ``load`` можно вызывать повторно (POST /reload)."""
 
@@ -200,25 +235,18 @@ class State:
         self.clf: Optional[CatBoostClassifier] = None
         self.unc: dict = {}
         self.metrics: dict = {}
+        self.sets: dict[str, ModelSet] = {}   # official — всегда; gps — если обучена (train_catboost --gps)
         self.plan_by_tr: dict[int, list[dict]] = {}
         self.stops_by_tr: dict = {}          # разобранный план (features.tabular.Stops) — кеш на весь день
         self.latencies: deque = deque(maxlen=2000)
         self.n_requests = 0
 
     def load(self) -> None:
-        meta_path = ARTIFACTS_DIR / "catboost_meta.json"
-        if not meta_path.exists():
-            raise RuntimeError(f"meta не найден: {meta_path}. Сначала запусти train_catboost.py --fit")
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        models = [CatBoostRegressor().load_model(str(ARTIFACTS_DIR / f"catboost_seed{i}.cbm"))
-                  for i in range(meta["n_models"])]
-        q = clf = None
-        unc: dict = {}
-        if all((ARTIFACTS_DIR / f).exists() for f in ("catboost_quantiles.cbm", "catboost_classes.cbm",
-                                                       "catboost_uncertainty.json")):
-            q = CatBoostRegressor().load_model(str(ARTIFACTS_DIR / "catboost_quantiles.cbm"))
-            clf = CatBoostClassifier().load_model(str(ARTIFACTS_DIR / "catboost_classes.cbm"))
-            unc = json.loads((ARTIFACTS_DIR / "catboost_uncertainty.json").read_text())
+        sets = {"official": ModelSet("catboost_")}
+        if (ARTIFACTS_DIR / "catboost_gps_meta.json").exists():
+            sets["gps"] = ModelSet("catboost_gps_")
+        off = sets["official"]
+        models, meta, q, clf, unc = off.models, off.meta, off.q, off.clf, off.unc
         plan: dict[int, list[dict]] = {}
         if SCHEDULE_PATH.exists():
             s = pd.read_csv(SCHEDULE_PATH)
@@ -232,6 +260,7 @@ class State:
         with self.lock:
             self.models, self.meta, self.q, self.clf, self.unc, self.plan_by_tr = models, meta, q, clf, unc, plan
             self.stops_by_tr = stops
+            self.sets = sets
             self.metrics = _load_metrics()
 
     @property
@@ -325,7 +354,7 @@ def _naive(ts) -> pd.Timestamp:
     return t.tz_localize(None) if t.tzinfo is not None else t
 
 
-def _features(req: PredictRequest) -> tuple[pd.DataFrame, Optional[float]]:
+def _features(req: PredictRequest) -> tuple[pd.DataFrame, dict]:
     """Признаки точки той же ``point_features``, что в батче (``tabular.build_features``).
 
     Быстрый путь: план ТС разобран один раз при старте (``STATE.stops_by_tr``), телеметрия собирается прямо
@@ -365,7 +394,19 @@ def _features(req: PredictRequest) -> tuple[pd.DataFrame, Optional[float]]:
     for c in FEATURES:
         if c not in X:
             X[c] = np.nan
-    return X[FEATURES], _off_route_m(tele, sg, t_sec)
+    return X[FEATURES], {"off_route_m": _off_route_m(tele, sg, t_sec),
+                         "critical_trip": _critical_trip(sg, req.target_stop_id)}
+
+
+def _critical_trip(sg, target_stop_id) -> Optional[str]:
+    """Открывающий (первый за день) или закрывающий (последний) рейс ТС — по плану."""
+    k = np.where(sg.id == target_stop_id)[0]
+    if not len(k):
+        return None
+    trip = sg.trip[k[0]]
+    if trip == sg.trip.min():
+        return "opening"
+    return "closing" if trip == sg.trip.max() else None
 
 
 def _off_route_m(tele, sg, t_sec: int) -> Optional[float]:
@@ -387,25 +428,44 @@ def _num(x) -> Optional[float]:
 
 
 def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
+    """Пачка запросов; режимы подсказки (official / gps) считаются своими комплектами моделей."""
+    out: dict[int, PredictResponse] = {}
+    modes = [r.cur_dev_mode or DEFAULT_CUR_DEV_MODE for r in reqs]
+    for mode in dict.fromkeys(modes):
+        idx = [i for i, m in enumerate(modes) if m == mode]
+        used = mode if mode in STATE.sets else "official"  # gps не обучена -> основная модель
+        for i, resp in zip(idx, _predict_set([reqs[i] for i in idx], STATE.sets[used], used)):
+            out[i] = resp
+    return [out[i] for i in range(len(reqs))]
+
+
+def _predict_set(reqs: list[PredictRequest], ms: ModelSet, mode: str) -> list[PredictResponse]:
     t0 = time.perf_counter()
     built = [_features(r) for r in reqs]
     X = pd.concat([b[0] for b in built])
-    off_route = [b[1] for b in built]
-    feats = STATE.meta["features"]
+    extra = [b[1] for b in built]
+    feats = ms.meta["features"]
     cats = [c for c in CAT_FEATURES if c in feats]
-    pool = Pool(X[feats], cat_features=cats)
     cur = np.array([r.cur_dev_s for r in reqs], dtype=float)
-    per_model = np.array([m.predict(pool) for m in STATE.models])          # (n_models, n)
+    if mode == "gps":
+        # подсказка = задержка на последнем GPS-прибытии, посчитанная тем же правилом, что при обучении
+        # (как у backend: features.tabular.gps_history -> gps_last_dev; нет прибытий -> 0)
+        c = X["gps_last_dev"].astype(float).fillna(0.0)
+        X["cur_dev_s"] = c.to_numpy()
+        X["gps_dev_minus_cur"] = X["gps_med3"].astype(float) - c
+        cur = c.to_numpy()
+    pool = Pool(X[feats], cat_features=cats)
+    per_model = np.array([m.predict(pool) for m in ms.models])          # (n_models, n)
     resid = per_model.mean(axis=0)
     delay = cur + resid
 
-    if STATE.q is not None:
-        qs = np.sort(STATE.q.predict(pool), axis=1) + cur[:, None]
-        margin = STATE.unc.get("conformal_margin_s", 0.0)
+    if ms.q is not None:
+        qs = np.sort(ms.q.predict(pool), axis=1) + cur[:, None]
+        margin = ms.unc.get("conformal_margin_s", 0.0)
         lo, hi = np.minimum(qs[:, 0] - margin, delay), np.maximum(qs[:, 2] + margin, delay)
-        classes = STATE.meta.get("classes", ["early", "ontime", "late"])
-        order = [list(STATE.clf.classes_).index(c) for c in classes]
-        proba = STATE.clf.predict_proba(pool)[:, order]
+        classes = ms.meta.get("classes", ["early", "ontime", "late"])
+        order = [list(ms.clf.classes_).index(c) for c in classes]
+        proba = ms.clf.predict_proba(pool)[:, order]
     else:  # без моделей неопределённости: разброс сидов и сигмоида из контракта
         spread = per_model.std(axis=0)
         lo, hi = delay - 150 - 2 * spread, delay + 150 + 2 * spread
@@ -413,7 +473,7 @@ def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
         proba = np.column_stack([np.zeros_like(p_late), 1 - p_late, p_late])
 
     # причины: приближённый SHAP одной модели (~35 мс/точка); база сдвигается к среднему ансамбля
-    shap = STATE.models[0].get_feature_importance(data=pool, type="ShapValues", shap_calc_type="Approximate")
+    shap = ms.models[0].get_feature_importance(data=pool, type="ShapValues", shap_calc_type="Approximate")
     shap[:, -1] += resid - shap.sum(axis=1)
     elapsed = (time.perf_counter() - t0) * 1000 / len(reqs)
 
@@ -421,7 +481,7 @@ def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
     for i, req in enumerate(reqs):
         f = X.iloc[i].to_dict()
         age = _num(f.get("last_fix_age_s"))
-        off = off_route[i]
+        off, crit = extra[i]["off_route_m"], extra[i]["critical_trip"]
         status = ("no_telemetry" if age is None else "stale" if age > STALE_AFTER_S
                   else "off_route" if off is not None and off > OFF_ROUTE_M else "live")
         conf = float(np.clip(1 - (hi[i] - lo[i]) / 600, 0.05, 0.99)) * (1.0 if status == "live" else 0.5)
@@ -434,6 +494,16 @@ def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
         lead_s = (_naive(req.target_time_begin) - _naive(req.T)).total_seconds()
         level = risk_level(d, pe, pl)
         reason = reason_pattern(level, d, ex["causes"], f)
+        rec_text = recommendation(level, d, ex["causes"])
+        catchup = None
+        need, now = _num(f.get("req_speed_kmh")), _num(f.get("moving_spd15")) or _num(f.get("spd15"))
+        if d >= 60 and status == "live" and need is not None and 5 <= need <= 70:
+            catchup = round(need, 0)
+            rec_text += (f"; чтобы вернуться в график, нужна средняя скорость ~{need:.0f} км/ч"
+                         + (f" (сейчас ~{now:.0f})" if now is not None else ""))
+        if crit and level != "green":
+            rec_text = (f"{'открывающий' if crit == 'opening' else 'закрывающий'} рейс — опоздание особенно "
+                        f"критично для перевозчика; " + rec_text)
         total = sum(abs(t["contribution"]) for t in ex["top_features"]) or 1.0
         top = [TopFeature(name=t["name"], value=_num(f.get(t["name"])),
                           contribution=round(abs(t["contribution"]) / total, 3), contribution_sec=t["contribution"])
@@ -441,13 +511,14 @@ def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
         out.append(PredictResponse(
             sample_id=req.sample_id, delay_pred_sec=round(d, 1), risk_score=round(pl, 3), confidence=round(conf, 3),
             top_features=top, reason_pattern=reason, recommendation=REC_CODE.get(reason, "monitor"),
-            model_version=STATE.version,
+            model_version=MODEL_VERSION_ENV or ms.version,
             lead_min=round((_naive(req.target_time_begin) - _naive(req.T)).total_seconds() / 60, 1),
             delay_interval_sec=[round(float(lo[i]), 1), round(float(hi[i]), 1)],
             p_early=round(pe, 3), p_ontime=round(float(proba[i, 1]), 3), p_late=round(pl, 3), risk_level=level,
-            causes=[Cause(**c) for c in ex["causes"]], recommendation_text=recommendation(level, d, ex["causes"]),
+            causes=[Cause(**c) for c in ex["causes"]], recommendation_text=rec_text,
             data_status=status, horizon_ok=bool(HORIZON_S[0] < lead_s <= HORIZON_S[1]),
-            off_route_m=None if off is None else round(off, 0), latency_ms=round(elapsed, 2)))
+            off_route_m=None if off is None else round(off, 0), critical_trip=crit, catchup_speed_kmh=catchup,
+            cur_dev_mode=mode, latency_ms=round(elapsed, 2)))
     with STATE.lock:
         STATE.latencies.extend([elapsed] * len(reqs))
         STATE.n_requests += len(reqs)
@@ -477,7 +548,9 @@ def _fallback(req: PredictRequest, err: Exception) -> PredictResponse:
 def health() -> HealthResponse:
     return HealthResponse(status="ok" if STATE.models else "cold", n_models=len(STATE.models),
                           n_features=len(STATE.meta.get("features", [])), model_version=STATE.version,
-                          uncertainty_models=STATE.q is not None, vehicles_in_schedule=len(STATE.plan_by_tr))
+                          uncertainty_models=STATE.q is not None, gps_models="gps" in STATE.sets,
+                          default_cur_dev_mode=DEFAULT_CUR_DEV_MODE,
+                          vehicles_in_schedule=len(STATE.plan_by_tr))
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -519,7 +592,8 @@ def metrics_model() -> MetricsResponse:
 def model_info() -> dict:
     return {"model_version": STATE.version, "n_models": len(STATE.models), "target": STATE.meta.get("target"),
             "features": STATE.meta.get("features"), "params": STATE.meta.get("params"),
-            "uncertainty": STATE.unc, "validation": STATE.metrics.get("validation", {})}
+            "uncertainty": STATE.unc, "validation": STATE.metrics.get("validation", {}),
+            "modes": {k: {"model_version": v.version, "uncertainty": v.unc} for k, v in STATE.sets.items()}}
 
 
 @app.post("/reload", response_model=HealthResponse)
