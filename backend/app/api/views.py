@@ -4,8 +4,10 @@ The dataset has no routes — only each vehicle's planned stop visits for the da
 vehicle id, and every distinct trip shape (grouped by its first and last stop) is one "direction" with
 its own line: the map projects the vehicle and its schedule onto the line of the vehicle's current trip,
 which a back-and-forth whole-day polyline would make ambiguous. Base geometry is stop-to-stop straight
-segments (there is no road geometry in the dataset); ``route_shapes.json`` (built once by
-``infra/build_route_shapes.py`` from OSRM) overrides it with polylines that follow the actual streets.
+segments (there is no road geometry in the dataset); ``route_shapes.json`` overrides it with polylines that follow
+the actual streets, and ``route_names.json`` gives the real route number of each vehicle. Both are built by
+``infra/build_route_shapes_2gis.py`` from 2GIS (the route passing through the vehicle's stops and its road geometry,
+with OSRM segments from ``infra/build_route_shapes.py`` where 2GIS has none).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ log = logging.getLogger(__name__)
 _EPOCH = datetime(1970, 1, 1)
 STALE_ARRIVAL_S = 1800  # last detected arrival older than this: locate the vehicle in its plan by time instead
 ROUTE_SHAPES = Path(__file__).with_name("route_shapes.json")
+ROUTE_NAMES = Path(__file__).with_name("route_names.json")
 
 
 def _load_road_shapes() -> dict[str, dict[str, list[list[float]]]]:
@@ -36,11 +39,22 @@ def _load_road_shapes() -> dict[str, dict[str, list[list[float]]]]:
         log.info("route_shapes.json not found — routes will be drawn stop-to-stop")
         return {}
     try:
-        shapes = json.loads(ROUTE_SHAPES.read_text())
+        shapes = json.loads(ROUTE_SHAPES.read_text(encoding="utf-8"))
         log.info("route_shapes.json: %d routes with road geometry", len(shapes))
         return shapes
     except (OSError, ValueError) as e:
         log.warning("route_shapes.json unreadable (%s) — falling back to stop-to-stop", e)
+        return {}
+
+
+def _load_route_names() -> dict[str, dict]:
+    """Real route numbers per tr_id (``route_number``, ``route_numbers``, per-direction). Missing → none."""
+    if not ROUTE_NAMES.exists():
+        return {}
+    try:
+        return json.loads(ROUTE_NAMES.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        log.warning("route_names.json unreadable (%s) — routes stay unnumbered", e)
         return {}
 
 
@@ -51,6 +65,7 @@ class RouteCatalog:
         self.routes: dict[int, dict] = {}
         self._direction: dict[tuple[int, int], int] = {}
         self._road_shapes = _load_road_shapes()
+        self._route_names = _load_route_names()
         for tr_id, s in schedules.items():
             self.routes[tr_id] = self._build(tr_id, s)
 
@@ -69,16 +84,19 @@ class RouteCatalog:
         for t in trips:
             self._direction[(tr_id, t)] = index[shape[t]]
         route_shapes = self._road_shapes.get(str(tr_id), {})
+        names = self._route_names.get(str(tr_id), {})
         directions = []
         for i, k in enumerate(order):
             rep = max((vs for t, vs in trips.items() if shape[t] == k), key=len)  # the fullest trip of that shape
             geometry = route_shapes.get(str(i)) or [[v.lat, v.lon] for v in rep]
             directions.append({"direction_id": i, "name": f"{rep[0].label} → {rep[-1].label}",
+                               "route_number": (names.get("directions") or {}).get(str(i)),
                                "geometry": geometry,
                                "stops": [_stop(v) for v in rep]})
         main = directions[0]
         ends = main["name"].split(" → ")
         return {"route_id": str(tr_id), "name": f"{ends[0]} ↔ {ends[-1]}", "transport_type": "bus",
+                "route_number": names.get("route_number"), "route_numbers": names.get("route_numbers") or [],
                 "geometry": main["geometry"], "stops": main["stops"], "directions": directions}
 
 

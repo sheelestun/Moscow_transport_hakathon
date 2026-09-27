@@ -231,3 +231,6 @@ __marimo__/
 
 # Local compose override (dataset paths, ports, CLOCK_START). Contains machine-specific paths.
 docker-compose.override.yml
+
+# ответы 2ГИС (infra/build_route_shapes_2gis.py)
+.cache/

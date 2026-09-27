@@ -24,6 +24,10 @@ window.App = window.App || {};
     lines: loadLines(),
     verified: [],        // сверенные прогнозы (прогноз vs факт)  // выбранные линии: Set route_id или null = все
   };
+  App.routeLabel = (routeId) => {
+    const r = state.routes.get(routeId);
+    return (r && r.route_number) || routeId;
+  };
 
   // ---------- Выбор линий (запоминаем в браузере) ----------
   function loadLines() {
@@ -123,7 +127,7 @@ window.App = window.App || {};
           <span class="worst-stop__delay t-${level}">+${Math.round(s.avg_delay_sec)}с</span>
           <span class="worst-stop__body">
             <b>${App.esc(s.name)}</b>
-            <span class="muted">${App.esc(s.route_id)} · ${s.vehicles} ТС · пик ${Math.round(s.max_delay_sec)}с</span>
+            <span class="muted">${App.esc(App.routeLabel(s.route_id))} · ${s.vehicles} ТС · пик ${Math.round(s.max_delay_sec)}с</span>
           </span>
         </li>`;
       }).join("");
@@ -165,7 +169,7 @@ window.App = window.App || {};
         return `<li class="worst-stop" data-pair="${App.esc(p.leader_id)}|${App.esc(p.follower_id)}">
           <span class="worst-stop__delay t-red">${gap}с</span>
           <span class="worst-stop__body">
-            <b>${App.esc(p.route_id)} · пара ${App.esc(p.leader_id)} → ${App.esc(p.follower_id)}</b>
+            <b>${App.esc(App.routeLabel(p.route_id))} · пара ${App.esc(p.leader_id)} → ${App.esc(p.follower_id)}</b>
             <span class="muted">интервал ${gap}с при плане ${plan}с (${pct}% от плана)</span>
           </span>
         </li>`;
@@ -363,7 +367,7 @@ window.App = window.App || {};
     $("horizon-summary").innerHTML = !items.length
       ? `<span class="t-green">инцидентов не ожидается</span>`
       : `<b class="t-red">${items.length} ${plural(items.length, "инцидент", "инцидента", "инцидентов")}</b>` +
-        (first ? ` · ближайший через <b>${Math.max(0, Math.round(first.min))} мин</b>: <b>${App.esc(first.a.route_id)}</b> ${App.fmtDelayShort(first.a.delay_pred_sec)} к «${App.esc(first.a.target_stop_name || first.a.target_stop_id)}»` : "");
+        (first ? ` · ближайший через <b>${Math.max(0, Math.round(first.min))} мин</b>: <b>${App.esc(App.routeLabel(first.a.route_id))}</b> ${App.fmtDelayShort(first.a.delay_pred_sec)} к «${App.esc(first.a.target_stop_name || first.a.target_stop_id)}»` : "");
     if (document.body.classList.contains("hz-collapsed")) return; // в свёрнутом виде точки не раскладываем
 
     // создаём / обновляем элементы
@@ -383,7 +387,7 @@ window.App = window.App || {};
       el.dataset.level = level;
       el.classList.toggle("is-selected", a.vehicle_id === state.selectedId);
       const chip = el.querySelector(".hz-chip");
-      chip.innerHTML = `<b>${App.esc(a.route_id)}</b><span>${App.fmtDelayShort(a.delay_pred_sec)}</span>`;
+      chip.innerHTML = `<b>${App.esc(App.routeLabel(a.route_id))}</b><span>${App.fmtDelayShort(a.delay_pred_sec)}</span>`;
       chip.title = `ТС ${a.vehicle_id}, маршрут ${a.route_id}: ${App.fmtDelay(a.delay_pred_sec)} к «${a.target_stop_name || a.target_stop_id}» ${App.fmtIn(a.eta_incident)}`;
       el._min = min;
     }
@@ -489,7 +493,7 @@ window.App = window.App || {};
       else { mark = "ошибка " + App.fmtDelayShort(Math.abs(err)).replace(/^[+−]/, ""); cls = "miss"; }
       return `
         <li class="vf vf--${cls}">
-          <span class="route-chip">${App.esc(v.route_id)}</span>
+          <span class="route-chip">${App.esc(App.routeLabel(v.route_id))}</span>
           <span class="vf__stop">«${App.esc(v.target_stop_name || v.target_stop_id)}»</span>
           <span class="vf__nums">прогноз <b>${App.fmtDelayShort(v.delay_pred_sec)}</b> · факт <b>${App.fmtDelayShort(v.delay_fact_sec)}</b></span>
           <span class="vf__mark">${cls === "ok" ? "✓" : "✗"} ${mark}</span>
@@ -549,7 +553,7 @@ window.App = window.App || {};
       <li><label class="line-opt">
         <input type="checkbox" value="${App.esc(r.route_id)}" ${isVisible(r.route_id) ? "checked" : ""}>
         <span class="dot dot--${levels[r.route_id] || "green"}" title="${App.levelName[levels[r.route_id] || "green"]}"></span>
-        <span class="route-chip" data-type="${App.esc(r.transport_type || "")}">${App.esc(r.route_id)}</span>
+        <span class="route-chip" data-type="${App.esc(r.transport_type || "")}">${App.esc(App.routeLabel(r.route_id))}</span>
         <span class="line-opt__name">${App.esc(r.name)}</span>
       </label></li>`;
     let html;
