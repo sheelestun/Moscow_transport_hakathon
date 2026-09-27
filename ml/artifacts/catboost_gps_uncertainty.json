@@ -1,0 +1,8 @@
+{
+  "conformal_margin_s": 35.2511192060151,
+  "coverage_target": 0.8,
+  "coverage_calibrated_holdout": 0.8045871854134565,
+  "auc_late_holdout": 0.9701245536103127,
+  "auc_early_holdout": 0.9629430719656282,
+  "class_accuracy_holdout": 0.8725212464589235
+}

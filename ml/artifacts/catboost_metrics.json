@@ -1,0 +1,26 @@
+{
+  "holdout_mae": 40.014481260525336,
+  "holdout_baseline_mae": 93.35977337110482,
+  "holdout_zero_mae": 103.33711048158641,
+  "proxy_mae": 39.11637858389727,
+  "proxy_baseline_mae": 88.37884872824633,
+  "lovo_mae": 78.93556696362955,
+  "lovo_baseline_mae": 88.37884872824633,
+  "mae_target_estimate": 78.39376770538244,
+  "mae_by_lead": [
+    {
+      "bin": "10-15\u043c",
+      "lead_lo_s": 600,
+      "lead_hi_s": 900,
+      "points": 343,
+      "mae_s": 39.34016025291741
+    },
+    {
+      "bin": "15\u043c+",
+      "lead_lo_s": 900,
+      "lead_hi_s": null,
+      "points": 10,
+      "mae_s": 63.14369182147736
+    }
+  ]
+}
