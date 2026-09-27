@@ -1,4 +1,4 @@
-"""FastAPI application: starts NDTP ingest and serves the dispatcher API.
+"""FastAPI application: starts telemetry ingest (NDTP listener + dataset replay) and serves the API.
 
 Run with exactly one worker. The NDTP listener and all in-memory state live in this process; a second
 worker would try to bind the NDTP port again and hold its own copy of the state::
@@ -11,17 +11,18 @@ Swagger UI at ``/docs``, OpenAPI schema at ``/openapi.json``.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import health
+from .api import health, ingest
+from .clock import DatasetClock
 from .config import Settings
+from .ingest import Ingest, ReplaySource, Traffic, load_traffic
 from .ndtp import NdtpFix, NdtpServer
 
 VERSION = "0.1.0"
@@ -37,23 +38,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         state = app.state
         state.started_at = time.time()
-        state.last_fix = {}
-        state.last_fix_at = None
+        state.issues = []
+        state.clock = DatasetClock.starting_at(settings.clock_start, day=settings.clock_day, speed=settings.clock_speed)
+        log.info("dataset clock: %s at startup, speed x%g", state.clock.anchor_dataset, state.clock.speed)
+
+        traffic = await _load_traffic(settings, state.issues)
+        state.ingest = Ingest(state.clock, traffic.unit_to_tr if traffic else {}, ndtp_fresh_s=settings.ndtp_fresh_s,
+                              max_skew_s=settings.ndtp_max_clock_skew_s)
+        tasks: list[asyncio.Task] = []
+
         state.ndtp = None
-        fixes: asyncio.Queue[NdtpFix] = asyncio.Queue(maxsize=settings.ingest_queue_size)
         if settings.ndtp_enabled:
+            fixes: asyncio.Queue[NdtpFix] = asyncio.Queue(maxsize=settings.ingest_queue_size)
             state.ndtp = NdtpServer(fixes, host=settings.ndtp_host, port=settings.ndtp_port,
                                     idle_timeout=settings.ndtp_idle_timeout_s,
                                     max_connections=settings.ndtp_max_connections, backlog=settings.ndtp_backlog)
             await state.ndtp.start()
-        consumer = asyncio.create_task(_consume_fixes(fixes, state), name="consume-fixes")
-        log.info("backend %s started", VERSION)
+            tasks.append(_background(state.ingest.consume_ndtp(fixes), "ingest-ndtp"))
+
+        state.replay = None
+        if settings.replay_enabled and traffic is not None:
+            state.replay = ReplaySource(traffic.pings, state.clock, state.ingest.accept_replay,
+                                        backfill_s=settings.replay_backfill_s)
+            tasks.append(_background(state.replay.run(), "replay"))
+
+        log.info("backend %s started%s", VERSION, f" with issues: {state.issues}" if state.issues else "")
         try:
             yield
         finally:
-            consumer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await consumer
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if state.ndtp is not None:
                 await state.ndtp.stop()
 
@@ -66,18 +81,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
     app.include_router(health.router)
+    app.include_router(ingest.router)
     return app
 
 
-async def _consume_fixes(fixes: asyncio.Queue[NdtpFix], state) -> None:
-    """Stand-in consumer: keeps the latest fix per unit, so fixes are visible in ``/ingest/ndtp``.
+async def _load_traffic(settings: Settings, issues: list[str]) -> Traffic | None:
+    if settings.dataset_dir is None:
+        issues.append("DATASET_DIR not set: no unit registry (NDTP fixes can't be matched to vehicles), no replay")
+        return None
+    path = settings.dataset_dir / settings.dataset_split / "traffic.csv"
+    try:
+        return await asyncio.to_thread(load_traffic, path)
+    except (OSError, ValueError, KeyError) as e:
+        issues.append(f"cannot load {path}: {type(e).__name__}: {e}")
+        return None
 
-    Replaced by the ingest pipeline (unit → vehicle mapping, dataset clock, schedule matching).
-    """
-    while True:
-        fix = await fixes.get()
-        state.last_fix[fix.unit_id] = fix
-        state.last_fix_at = fix.received_at
+
+def _background(coro: Coroutine, name: str) -> asyncio.Task:
+    task = asyncio.create_task(coro, name=name)
+
+    def done(t: asyncio.Task) -> None:
+        if not t.cancelled() and t.exception() is not None:
+            log.error("background task %s crashed", name, exc_info=t.exception())
+
+    task.add_done_callback(done)
+    return task
 
 
 app = create_app()

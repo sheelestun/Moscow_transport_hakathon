@@ -74,13 +74,22 @@ def main() -> None:
     ap.add_argument("--duration", type=float, default=0, help="секунд работы (0 — пока не остановят)")
     ap.add_argument("--max-age", type=int, default=60, help="точка трека старше — считаем, что координат нет")
     ap.add_argument("--clock-out", type=Path, default=Path("emulator_clock.json"))
+    ap.add_argument("--clock-url", default=None,
+                    help="URL бэкенда (напр. https://api.mowtransit.ru): взять датасетные часы из его GET /clock, "
+                         "чтобы треки шли ровно по шкале бэкенда (--start и --speed тогда игнорируются)")
     args = ap.parse_args()
 
     tracks = load_tracks(args.dataset, args.tr)
-    now_msk = datetime.now(MSK)
-    hh, mm = (map(int, args.start.split(":")) if args.start else (now_msk.hour, now_msk.minute))
-    ds_start = DATASET_DAY + pd.Timedelta(hours=hh, minutes=mm)
-    wall_start = time.time()
+    if args.clock_url:
+        backend_clock = httpx.get(args.clock_url.rstrip("/") + "/clock", timeout=10).raise_for_status().json()
+        ds_start = pd.Timestamp(backend_clock["anchor_dataset"])
+        wall_start = float(backend_clock["anchor_wall"])
+        args.speed = float(backend_clock["speed"])
+    else:
+        now_msk = datetime.now(MSK)
+        hh, mm = (map(int, args.start.split(":")) if args.start else (now_msk.hour, now_msk.minute))
+        ds_start = DATASET_DAY + pd.Timedelta(hours=hh, minutes=mm)
+        wall_start = time.time()
     clock = {"wall_start_utc": datetime.fromtimestamp(wall_start, timezone.utc).isoformat(),
              "dataset_start": ds_start.isoformat(), "speed": args.speed,
              "rule": "dataset_time = dataset_start + (packet_utc - wall_start_utc) * speed",
@@ -89,10 +98,11 @@ def main() -> None:
     print(f"ТС: {len(tracks)} | датасетные часы стартуют с {ds_start} ×{args.speed} | сопоставление -> {args.clock_out}")
 
     client = httpx.Client(base_url=args.emu_url, timeout=10)
+    run_start = time.time()  # --duration считается от запуска скрипта, а не от якоря часов
     try:
         while True:
             elapsed = time.time() - wall_start
-            if args.duration and elapsed > args.duration:
+            if args.duration and time.time() - run_start > args.duration:
                 break
             at = np.datetime64(ds_start + pd.Timedelta(seconds=elapsed * args.speed))
             units = [{"unitId": tr["unit_id"], "intervalMs": int(args.interval * 1000), "autoGenerate": False,

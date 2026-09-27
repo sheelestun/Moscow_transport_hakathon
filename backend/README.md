@@ -3,22 +3,47 @@
 Production backend: NDTP ingest → schedule matching → ML orchestration → dispatcher API.
 The old simulator-based demo backend lives in `../mock_backend` and is not part of this.
 
+## Plan
+
+Built piece by piece; each piece is tested before the next starts.
+
+| # | Piece | Status |
+|---|---|---|
+| 1 | NDTP codec | done |
+| 2 | NDTP TCP server + load test | done |
+| 3 | Service shell: `main.py`, config, `/health`, Swagger | done |
+| 4 | Dataset clock, normalized pings (unit → vehicle), replay source, NDTP/replay arbitration | done |
+| 5 | State: schedule index, per-vehicle buffers, arrival detection → current deviation, segment speed, dwell | |
+| 6 | ML client + predictor (target stop in (T+10, T+15] min, `/predict/batch`) | |
+| 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | |
+| 8 | Postgres history | |
+| 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | |
+| 10 | Deploy: nginx vhosts (`api.` / `app.` / `docs.` mowtransit.ru), TLS, compose | |
+
 ## Layout (so far)
 
 ```
 app/
-  main.py         the service: FastAPI app, lifespan starts/stops NDTP ingest
-  config.py       settings from env vars (NDTP_PORT, CORS_ORIGINS, LOG_LEVEL, ...)
+  main.py         the service: FastAPI app, lifespan starts/stops ingest
+  config.py       settings from env vars (DATASET_DIR, CLOCK_START, NDTP_PORT, ...)
+  clock.py        DatasetClock: wall time ↔ the dataset's timeline (2026-01-06, Moscow-local)
   api/
-    health.py     GET /health (short status), GET /ingest/ndtp (full listener diagnostics)
+    health.py     GET /health (short status), GET /clock
+    ingest.py     GET /ingest/ndtp (listener), GET /ingest/vehicles (latest ping per vehicle + source)
   ndtp/
     protocol.py   NDTP wire codec: framing, CRC-16/MODBUS, handshake + G6CellNav00 decoding
     server.py     asyncio TCP server terminals connect to; emits NdtpFix onto a queue
     __main__.py   standalone debug listener: NDTP ingest only, logs every fix
+  ingest/
+    models.py     Ping: one traffic.csv-style point on the dataset timeline
+    dataset.py    traffic.csv loader: unit → vehicle registry + pings for replay
+    pipeline.py   NdtpFix / replayed row → Ping; per-vehicle NDTP/replay arbitration
+    replay.py     plays traffic.csv as the clock passes (backfills the last hour on start)
 scripts/
   ndtp_loadtest.py  load test for NDTP ingest (see below)
 tests/
-  fixtures/       raw TCP captures from ndtp-telemetry-emulator:1.0 (see test_ndtp_protocol.py)
+  fixtures/       raw TCP captures from ndtp-telemetry-emulator:1.0 (see test_ndtp_protocol.py);
+                  dataset/validate/traffic.csv is synthetic (real format and IDs, made-up positions)
 src/csv_replayer.py   kept from the old backend: reference for the ML /predict payload
 ```
 
@@ -27,11 +52,36 @@ src/csv_replayer.py   kept from the old backend: reference for the ML /predict p
 | What | Command | Ports |
 |---|---|---|
 | The service (Docker) | `docker compose --profile dev up -d --build backend-dev` (repo root) | API `:8010` → 8000, NDTP `:9201` |
-| The service (local) | `uvicorn app.main:app --workers 1` (from `backend/`) | API `:8000`, NDTP `:9201` |
+| The service (local) | `DATASET_DIR=<dataset> uvicorn app.main:app --workers 1` (from `backend/`) | API `:8000`, NDTP `:9201` |
 | NDTP only, for debugging | `python -m app.ndtp` (from `backend/`) | NDTP `:9201` |
 
 Always one worker: the NDTP listener and in-memory state live in the process. Swagger: `/docs`.
 `backend-dev` doesn't depend on `ml` in compose on purpose — without ML the backend degrades, it doesn't wait.
+
+Compose mounts the dataset (the organizers' archive, unpacked) from `./dataset`; elsewhere set
+`DATASET_HOST_DIR=/path/to/dataset`. Without a dataset the service runs but reports `degraded`: NDTP
+fixes can't be matched to vehicles.
+
+### Time
+
+The dataset is one day, 2026-01-06; live telemetry carries today's time. `app/clock.py` maps one onto
+the other. By default the dataset clock starts at the current Moscow time of day, speed 1 — so **at
+night the city is empty**, and after midnight MSK the clock runs into 2026-01-07 where there's no data.
+For a demo, pin it: `CLOCK_START=2026-01-06T08:00:00` (morning rush); `CLOCK_SPEED` speeds it up.
+
+### Live NDTP with real tracks
+
+`autoGenerate` in the emulator is a random walk that matches no vehicle. `infra/emulator_replay.py`
+feeds the emulator real tracks from `validate/traffic.csv`; `--clock-url` makes it follow this
+backend's clock (without it, the two clocks can differ by up to a minute):
+
+```
+python infra/emulator_replay.py --dataset <dataset> --emu-url http://localhost:18080 \
+    --target-host ndtp.mowtransit.ru --target-port 9201 --clock-url https://api.mowtransit.ru
+```
+
+Vehicles on live NDTP override the replay; if their feed stops for `NDTP_FRESH_S` (60 s), replay takes
+over again (`GET /ingest/vehicles` shows each vehicle's source).
 
 Tests: `pytest backend/tests` from the repo root (`pytest.ini` puts `backend/` on the path).
 

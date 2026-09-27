@@ -102,6 +102,15 @@ services:
       <<: *backend-env
       # Собственный алиас в логах/метриках, чтобы не путать с mock'ом.
       BACKEND_ROLE: dev
+      # Датасет: реестр unit_id → tr_id и replay traffic.csv (см. backend/README.md).
+      DATASET_DIR: /data
+      # Датасетные часы: пусто = текущее время суток МСК на 2026-01-06. Для демо ночью — например
+      # CLOCK_START=2026-01-06T08:00:00, иначе после полуночи МСК часы уходят в 7 января, где данных нет.
+      CLOCK_START: ${CLOCK_START:-}
+      CLOCK_SPEED: ${CLOCK_SPEED:-1}
+    volumes:
+      # Распакованный архив организаторов; по умолчанию ./dataset, как в LOCAL_SETUP.md.
+      - ${DATASET_HOST_DIR:-./dataset}:/data:ro
     # Не зацикливаем рестарты на недописанном сервисе: три попытки и стоп.
     restart: on-failure:3
 
