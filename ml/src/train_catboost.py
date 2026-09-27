@@ -253,6 +253,31 @@ def eval_uncertainty(data: dict, feats: list[str], params: dict) -> dict:
     }
 
 
+# ----------------------------------------------------------------------------- gps-режим (подсказка бэкенда)
+
+
+def apply_gps(data: dict) -> dict:
+    """Копия данных, где ``cur_dev_s`` (признак и база прогноза) = подсказка, которую считает backend на потоке.
+
+    Официальная ``cur_dev_s`` = (факт − план) на последней остановке с **планом** <= T, и факт этой остановки у ~45%
+    точек наступает уже после T: подсказка частично из будущего, на потоке её не посчитать. Backend
+    (``backend/app/state/fleet.py``) берёт задержку на **последнем прибытии, найденном по GPS** тем же правилом, что
+    ``features.tabular.gps_history`` (это признак ``gps_last_dev``), а если прибытий нет — шлёт 0. Модель,
+    обученная на официальной подсказке, на такой ошибается сильнее (test: 68.7 с против 44.8 у этой).
+    Используется только телеметрия до T — факты расписания не нужны.
+    """
+    out = dict(data)
+    for split in ("train", "test", "validate"):
+        X, M = data[split]
+        c = X["gps_last_dev"].fillna(0.0).to_numpy()
+        X, M = X.copy(), M.copy()
+        X["cur_dev_s"] = c
+        X["gps_dev_minus_cur"] = X["gps_med3"] - c  # признак считается от подсказки — пересчитываем, иначе утечка
+        M["cur_dev_s"] = c
+        out[split] = (X, M)
+    return out
+
+
 # ----------------------------------------------------------------------------- финал
 
 
@@ -281,6 +306,9 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("submission.csv"))
     ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "configs" / "catboost.json")
     ap.add_argument("--no-cache", action="store_true")
+    ap.add_argument("--gps", action="store_true",
+                    help="модель для потока: cur_dev_s = задержка на последнем GPS-прибытии, как считает backend; "
+                         "файлы catboost_gps_*, сабмит не пишется")
     args = ap.parse_args()
 
     data = load_all(args.dataset, cache=not args.no_cache)
@@ -290,6 +318,10 @@ def main() -> None:
     w_syn = cfg.get("w_syn", 1.0)
     seeds = list(range(cfg.get("n_seeds", 5)))
     mt = mae_target_estimate(data)
+    pre = "catboost_gps_" if args.gps else "catboost_"
+    if args.gps:
+        data = apply_gps(data)
+        print("[gps] cur_dev_s = задержка на последнем GPS-прибытии (как у backend), нет прибытий -> 0")
 
     if args.eval:
         ho = eval_holdout(data, feats, params, w_syn)
@@ -303,7 +335,7 @@ def main() -> None:
         # разбивка по горизонту прогноза: где модель точнее «на подлёте», где — за 10 мин
         Xte, Mte = data["test"]
         by_lead_ho = mae_by_lead(Mte["y"], ho["pred"], Xte["lead_s"]) if "lead_s" in Xte.columns else []
-        (ART / "catboost_metrics.json").write_text(json.dumps({
+        (ART / f"{pre}metrics.json").write_text(json.dumps({
             "holdout_mae": ho["test_mae"], "holdout_baseline_mae": ho["test_base"],
             "holdout_zero_mae": mae(data["test"][1]["y"], 0),
             "proxy_mae": px["proxy_mae"], "proxy_baseline_mae": px["proxy_base"],
@@ -326,28 +358,34 @@ def main() -> None:
         X, M = pooled(data)
         q, clf = fit_uncertainty(X, M, feats, params)
         ART.mkdir(parents=True, exist_ok=True)
-        q.save_model(str(ART / "catboost_quantiles.cbm"))
-        clf.save_model(str(ART / "catboost_classes.cbm"))
-        (ART / "catboost_uncertainty.json").write_text(json.dumps({
+        q.save_model(str(ART / f"{pre}quantiles.cbm"))
+        clf.save_model(str(ART / f"{pre}classes.cbm"))
+        (ART / f"{pre}uncertainty.json").write_text(json.dumps({
             "conformal_margin_s": u["conformal_margin_s"], "coverage_target": COVERAGE,
             "coverage_calibrated_holdout": u["coverage_calibrated"], "auc_late_holdout": u["auc_late"],
             "auc_early_holdout": u["auc_early"], "class_accuracy_holdout": u["class_accuracy"]}, indent=2))
-        print("[uncertainty] сохранены catboost_quantiles.cbm, catboost_classes.cbm, catboost_uncertainty.json")
+        print(f"[uncertainty] сохранены {pre}quantiles.cbm, {pre}classes.cbm, {pre}uncertainty.json")
 
     if args.fit:
         models = fit_final(data, feats, params, w_syn, seeds)
-        Xv, Mv = data["validate"]
-        pred = predict(models, Xv, feats, Mv["cur_dev_s"].to_numpy())
-        sub = write_submission(args.dataset, Xv.index, pred, args.out)
         ART.mkdir(parents=True, exist_ok=True)
         for i, m in enumerate(models):
-            m.save_model(str(ART / f"catboost_seed{i}.cbm"))
-        (ART / "catboost_meta.json").write_text(json.dumps(
+            m.save_model(str(ART / f"{pre}seed{i}.cbm"))
+        (ART / f"{pre}meta.json").write_text(json.dumps(
             {"features": feats, "cat_features": [c for c in CAT_FEATURES if c in feats], "params": params,
              "w_syn": w_syn, "n_models": len(models), "target": "target_delay_s - cur_dev_s",
              "classes": CLASSES, "quantiles": list(QUANTILES),
-             "model_version": f"cb-tab-{time.strftime('%Y%m%d-%H%M')}"}, ensure_ascii=False, indent=2))
-        print(f"[submission] {args.out}: {len(sub)} строк; прогноз {sub['prediction'].describe().round(1).to_dict()}")
+             "cur_dev_mode": "gps" if args.gps else "official",
+             "model_version": f"cb-tab{'-gps' if args.gps else ''}-{time.strftime('%Y%m%d-%H%M')}"},
+            ensure_ascii=False, indent=2))
+        # основной сабмит — официальная подсказка из validate; --gps пишет альтернативный сабмит, где подсказка
+        # посчитана только по телеметрии validate (как на потоке), по умолчанию в submission_gps.csv
+        out = args.out if not (args.gps and args.out == Path("submission.csv")) else Path("submission_gps.csv")
+        Xv, Mv = data["validate"]
+        pred = predict(models, Xv, feats, Mv["cur_dev_s"].to_numpy())
+        sub = write_submission(args.dataset, Xv.index, pred, out)
+        print(f"[submission] {out}: {len(sub)} строк; прогноз {sub['prediction'].describe().round(1).to_dict()}")
+        print(f"[models] сохранены {pre}seed0..{len(models) - 1}.cbm, {pre}meta.json")
 
 
 if __name__ == "__main__":

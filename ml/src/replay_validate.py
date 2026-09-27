@@ -26,7 +26,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-def build_requests(dataset: Path, history_min: int = 90, send_schedule: bool = False) -> list[dict]:
+def build_requests(dataset: Path, history_min: int = 90, send_schedule: bool = False,
+                   cur_dev_mode: str = "official") -> list[dict]:
     """Запросы в формате контракта сервиса: пакеты телеметрии ТС за ``history_min`` минут до T (0 — все до T).
 
     ``send_schedule`` — передавать плановое расписание ТС в запросе (как backend/csv_replayer); иначе сервис
@@ -59,7 +60,7 @@ def build_requests(dataset: Path, history_min: int = 90, send_schedule: bool = F
                              "location_valid": str(p.location_valid).lower(), "is_hist_data": int(bool(p.is_hist_data))})
         reqs.append({"sample_id": r.sample_id, "tr_id": int(r.tr_id), "T": r.T.isoformat(),
                      "target_stop_id": int(r.target_stop_id), "target_time_begin": r.target_time_begin.isoformat(),
-                     "cur_dev_s": float(r.cur_dev_s), "telemetry": tele,
+                     "cur_dev_s": float(r.cur_dev_s), "cur_dev_mode": cur_dev_mode, "telemetry": tele,
                      **({"schedule": plan.get(int(r.tr_id), [])} if send_schedule else {})})
     return reqs
 
@@ -71,12 +72,14 @@ def main() -> None:
     ap.add_argument("--url", default=None, help="адрес запущенного сервиса; по умолчанию — в процессе")
     ap.add_argument("--history-min", type=int, default=90)
     ap.add_argument("--send-schedule", action="store_true", help="передавать план ТС в запросе (как backend)")
+    ap.add_argument("--cur-dev-mode", default="official", choices=["official", "gps"],
+                    help="режим подсказки в запросе (для сверки с submission.csv — official)")
     ap.add_argument("--save-example", type=Path, default=None, help="сохранить пример запроса/ответа в JSON")
     args = ap.parse_args()
 
     import httpx
 
-    reqs = build_requests(args.dataset, args.history_min, args.send_schedule)
+    reqs = build_requests(args.dataset, args.history_min, args.send_schedule, args.cur_dev_mode)
     url = args.url
     if url is None:  # поднимаем сервис локально в фоновом потоке (настоящий HTTP)
         import threading
