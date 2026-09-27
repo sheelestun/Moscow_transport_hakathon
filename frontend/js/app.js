@@ -378,7 +378,10 @@ window.App = window.App || {};
       if (!el) {
         el = document.createElement("div");
         el.className = "hz-item";
-        el.innerHTML = `<button class="hz-chip"></button><i class="hz-stem"></i><i class="hz-dot"></i>`;
+        el.innerHTML = `<button class="hz-chip">
+          <span class="hz-chip__top"><span class="hz-chip__route"></span><span class="hz-chip__delay"></span></span>
+          <span class="hz-chip__bottom"></span>
+        </button><i class="hz-stem"></i><i class="hz-dot"></i>`;
         el.querySelector(".hz-chip").onclick = () => selectVehicle(a.vehicle_id);
         track.appendChild(el);
         hzItems.set(a.alert_id, el);
@@ -387,15 +390,20 @@ window.App = window.App || {};
       el.dataset.level = level;
       el.classList.toggle("is-selected", a.vehicle_id === state.selectedId);
       const chip = el.querySelector(".hz-chip");
-      chip.innerHTML = `<b>${App.esc(App.routeLabel(a.route_id))}</b><span>${App.fmtDelayShort(a.delay_pred_sec)}</span>`;
-      chip.title = `ТС ${a.vehicle_id}, маршрут ${a.route_id}: ${App.fmtDelay(a.delay_pred_sec)} к «${a.target_stop_name || a.target_stop_id}» ${App.fmtIn(a.eta_incident)}`;
+      const minRounded = Math.max(0, Math.round(min));
+      const whenLabel = minRounded === 0 ? "сейчас" : `через ${minRounded} ${plural(minRounded, "минуту", "минуты", "минут")}`;
+      const stopLabel = a.target_stop_name || `остановка ${a.target_stop_id}`;
+      chip.querySelector(".hz-chip__route").textContent = App.routeLabel(a.route_id);
+      chip.querySelector(".hz-chip__delay").textContent = `опоздает ${App.fmtDelayShort(a.delay_pred_sec)}`;
+      chip.querySelector(".hz-chip__bottom").innerHTML = `<b>${App.esc(whenLabel)}</b> · ${App.esc(stopLabel)}`;
+      chip.title = `ТС ${a.vehicle_id}, маршрут ${a.route_id}: ${whenLabel} у «${stopLabel}», прогноз опоздания ${App.fmtDelay(a.delay_pred_sec)}`;
       el._min = min;
     }
     for (const [id, el] of hzItems) if (!alive.has(id)) { el.remove(); hzItems.delete(id); }
 
-    // раскладка по «этажам», чтобы подписи не налезали друг на друга
+    // раскладка по «этажам», чтобы карточки не налезали друг на друга
     const W = track.clientWidth;
-    const LANES = 3, LANE_H = 24, GAP = 6;
+    const LANES = 2, LANE_H = 42, GAP = 8;
     const axisY = track.clientHeight - 22;
     const ends = new Array(LANES).fill(-Infinity);
     for (const { a } of items) {
@@ -403,6 +411,7 @@ window.App = window.App || {};
       const chip = el.querySelector(".hz-chip");
       const x = Math.max(0, Math.min(1, el._min / HORIZON_MIN)) * W;
       const w = chip.offsetWidth;
+      const chipH = chip.offsetHeight || 40;
       const left = Math.max(0, Math.min(W - w, x - w / 2));
       let lane = ends.findIndex((e) => left > e + GAP);
       if (lane < 0) lane = ends.indexOf(Math.min(...ends));
@@ -412,8 +421,8 @@ window.App = window.App || {};
       chip.style.left = left - x + "px";
       chip.style.top = top + "px";
       const stem = el.querySelector(".hz-stem");
-      stem.style.top = top + 20 + "px";
-      stem.style.height = Math.max(0, axisY - top - 24) + "px";
+      stem.style.top = top + chipH + "px";
+      stem.style.height = Math.max(0, axisY - top - chipH - 4) + "px";
       el.querySelector(".hz-dot").style.top = axisY - 6 + "px";
     }
   }

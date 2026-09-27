@@ -17,7 +17,7 @@
   --radius: 12px;
   --panel-w: 500px;
   --topbar-h: 64px;
-  --horizon-h: 100px;
+  --horizon-h: 118px;
 
   --font: "Onest", "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
@@ -452,37 +452,37 @@ button { font: inherit; color: inherit; }
   height: var(--horizon-h); display: flex; align-items: stretch; gap: 24px;
   padding: 0 28px 0 20px; background: linear-gradient(#0f1726, #0c131f); border-bottom: 1px solid var(--line);
 }
-.horizon__title { align-self: center; display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; white-space: nowrap; }
+.horizon__title { align-self: center; display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; white-space: nowrap; }
 .horizon__title b { font-size: 15px; }
-.horizon__title span { font-size: 13.5px; color: var(--red); font-family: var(--mono); }
+.horizon__title .horizon__hint { font-size: 12px; color: var(--muted); }
+.horizon__title #horizon-count { font-size: 13.5px; color: var(--red); font-family: var(--mono); }
 .horizon__track { position: relative; flex: 1; margin: 0 24px; }
 .hz-axis { position: absolute; left: 0; right: 0; bottom: 22px; height: 2px; background: #2b3854; border-radius: 1px; }
-.horizon__window {
-  position: absolute; left: 66.667%; right: 0; top: 0; bottom: 22px;
-  background: linear-gradient(rgba(91,140,255,0), rgba(91,140,255,.12));
-  border-bottom: 2px solid var(--accent);
-}
-.horizon__window span { position: absolute; left: 50%; bottom: -22px; transform: translateX(-50%); font-size: 12.5px; color: #8fb0ff; white-space: nowrap; }
 .hz-tick { position: absolute; bottom: 0; transform: translateX(-50%); font-size: 12.5px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
 .hz-tick:first-of-type { transform: none; }
 .hz-tick:last-of-type { transform: translateX(-100%); }
-.hz-empty { position: absolute; left: 0; right: 0; top: 30%; text-align: center; color: var(--green); font-size: 14.5px; }
+.hz-empty { position: absolute; left: 0; right: 0; top: 34%; text-align: center; color: var(--green); font-size: 14.5px; }
 .hz-item { position: absolute; top: 0; bottom: 0; width: 0; transition: left 1s linear; }
 .hz-chip {
-  position: absolute; display: flex; gap: 6px; align-items: center; height: 20px;
-  padding: 0 7px; white-space: nowrap; cursor: pointer;
-  font-family: var(--mono); font-size: 13px; line-height: 1;
-  background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--faint); border-radius: 5px;
+  position: absolute; display: flex; flex-direction: column; gap: 2px;
+  padding: 5px 9px; white-space: nowrap; cursor: pointer; text-align: left;
+  font-family: var(--font); line-height: 1.15;
+  background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--faint); border-radius: 6px;
   transition: top .3s, left .3s;
 }
-.hz-chip b { font-family: var(--font); font-weight: 700; }
+.hz-chip__top { display: flex; align-items: baseline; gap: 7px; }
+.hz-chip__route { font-weight: 700; font-size: 13.5px; color: var(--text); }
+.hz-chip__delay { font-family: var(--mono); font-weight: 600; font-size: 12.5px; color: var(--faint); }
+.hz-chip__bottom { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; max-width: 230px; }
+.hz-chip__bottom b { color: var(--text); font-weight: 600; }
 .hz-stem { position: absolute; left: -0.5px; width: 1px; background: var(--faint); opacity: .7; }
 .hz-dot { position: absolute; left: -6px; width: 12px; height: 12px; border-radius: 50%; background: var(--faint); border: 2px solid #0c131f; }
 .hz-item[data-level="red"] .hz-chip { border-left-color: var(--red); }
-.hz-item[data-level="red"] .hz-chip span { color: var(--red); }
+.hz-item[data-level="red"] .hz-chip .hz-chip__delay { color: var(--red); }
 .hz-item[data-level="red"] .hz-dot { background: var(--red); animation: pulse 1.5s infinite; }
 .hz-item[data-level="red"] .hz-stem { background: var(--red); opacity: .45; }
 .hz-item[data-level="yellow"] .hz-chip { border-left-color: var(--yellow); }
+.hz-item[data-level="yellow"] .hz-chip .hz-chip__delay { color: var(--yellow); }
 .hz-item[data-level="yellow"] .hz-dot { background: var(--yellow); }
 .hz-chip:hover, .hz-item.is-selected .hz-chip { border-color: #fff; background: var(--panel-3); z-index: 2; }
 .hz-item.is-selected .hz-dot { box-shadow: 0 0 0 3px #fff; }
