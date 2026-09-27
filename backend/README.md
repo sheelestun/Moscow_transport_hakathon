@@ -15,7 +15,7 @@ Built piece by piece; each piece is tested before the next starts.
 | 4 | Dataset clock, normalized pings (unit → vehicle), replay source, NDTP/replay arbitration | done |
 | 5 | State: schedule index, per-vehicle buffers, arrival detection → current deviation, segment speed, dwell | done |
 | 6 | ML client + predictor (target stop in (T+10, T+15] min, `/predict/batch`) | done |
-| 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | |
+| 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | done |
 | 8 | Postgres history | |
 | 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | |
 | 10 | Deploy: nginx vhosts (`api.` / `app.` / `docs.` mowtransit.ru), TLS, compose | |
@@ -32,6 +32,8 @@ app/
     ingest.py     GET /ingest/ndtp (listener), GET /ingest/vehicles (latest ping per vehicle + source)
     state.py      GET /state/vehicles (derived features), GET /state/vehicles/{tr_id}/arrivals
     predictions.py  GET /predictions (latest per vehicle), GET /predictions/recent
+    alerts.py     GET /alerts?active=true|false — dashboard alert payloads
+    timefmt.py    dataset time → wall-clock ISO for everything user-facing
   ndtp/
     protocol.py   NDTP wire codec: framing, CRC-16/MODBUS, handshake + G6CellNav00 decoding
     server.py     asyncio TCP server terminals connect to; emits NdtpFix onto a queue
@@ -50,6 +52,7 @@ app/
     client.py     HTTP client for the ML service
     payload.py    vehicle state → ML PredictRequest (telemetry window + the vehicle's whole day plan)
     predictor.py  target stop 10–15 min ahead, one forecast per target, ML-down fallback + retry
+  alerts.py       red forecasts → alerts (one per vehicle), verified against the detected arrival
 scripts/
   ndtp_loadtest.py  load test for NDTP ingest (see below)
 tests/
@@ -131,6 +134,20 @@ backend-built payloads reproduce the batch `submission.csv` within 0.1 s on 104/
 gap 1.6 s). The rest is inside the ML service — its online feature path isn't byte-identical to the batch
 pipeline; its own reference payloads (`src/csv_replayer.py`) differ from the batch too. Live on the real
 day: 100% of forecasts inside the horizon, ~21 ms per forecast in batches.
+
+## Alerts
+
+A forecast becomes an alert when the model's probability of arriving > 2 min late reaches
+`ALERT_RISK_THRESHOLD` (0.7, the dashboard's red) and its target stop is 10–15 min ahead — so there are no
+after-the-fact alerts. One active alert per vehicle. Each alert carries the predicted delay, the model's
+cause and recommendation, and the route segment (last detected stop → target stop).
+
+When the target arrival is detected the alert is `verified` with the actual delay and scored as a hit
+(actually > 2 min late) or a false alarm; `GET /health` shows live precision and forecast error. No arrival
+within the detection window → `resolved`.
+
+Live run on the real day (dataset 14:55–15:29 at ×10, locally trained model): 170 forecasts, 100% in the
+horizon; 4 alerts, 3 verified, all 3 hits (actual delays 253–278 s), forecast error 58 s.
 
 ## NDTP ingest performance
 

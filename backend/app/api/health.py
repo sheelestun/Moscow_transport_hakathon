@@ -64,6 +64,14 @@ class PredictorStatus(BaseModel):
     ml_batch_ms_p95: float | None = None
 
 
+class AlertsStatus(BaseModel):
+    active: int
+    raised: int
+    verified: int
+    precision: float | None = Field(None, description="share of verified alerts that were actually > 2 min late")
+    mae_verified_s: float | None = Field(None, description="|forecast − actual delay| over verified alerts")
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     issues: list[str]
@@ -75,6 +83,7 @@ class HealthResponse(BaseModel):
     replay: ReplayStatus
     state: StateStatus
     predictor: PredictorStatus
+    alerts: AlertsStatus
 
 
 class ClockResponse(BaseModel):
@@ -130,7 +139,13 @@ def health(request: Request) -> HealthResponse:
                                   vehicles_with_prediction=pred["vehicles_with_prediction"],
                                   horizon_ok_share=pred["horizon_ok_share"], ml_batch_ms_p50=pred["ml_batch_ms_p50"],
                                   ml_batch_ms_p95=pred["ml_batch_ms_p95"]),
+        alerts=_alerts_status(state.alerts.snapshot()),
     )
+
+
+def _alerts_status(a: dict) -> AlertsStatus:
+    return AlertsStatus(active=a["active"], raised=a["stats"]["raised"], verified=a["stats"]["verified"],
+                        precision=a["precision"], mae_verified_s=a["mae_verified_s"])
 
 
 @router.get("/clock", response_model=ClockResponse)

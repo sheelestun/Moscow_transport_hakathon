@@ -70,6 +70,12 @@ def test_load_schedule_orders_visits_and_splits_trips() -> None:
     assert s.cum_dist_m[4] == s.cum_dist_m[3]                      # no distance is added across a terminal
 
 
+def test_stop_label_falls_back_when_the_dataset_has_no_address() -> None:
+    v = load_schedule(SCHEDULE)[115106].visits[0]
+    assert v.label == "Остановка А"
+    assert StopVisit(**{**{f: getattr(v, f) for f in v.__slots__}, "name": ""}).label == "остановка без адреса"
+
+
 def test_arrivals_delay_and_dwell() -> None:
     fleet = Fleet({7: line_schedule(*PLANS)}, DatasetClock.starting_at())
     for p in TRACK:

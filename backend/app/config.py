@@ -56,3 +56,7 @@ class Settings(BaseSettings):
     predict_tick_s: float = Field(default=5.0, description="how often vehicles are checked for a new target stop")
     predict_retry_s: float = Field(default=30.0, description="after an ML failure, forecasts use the baseline this long")
     predict_max_ping_age_s: float = Field(default=900.0, description="vehicles silent longer are treated as not in service")
+
+    # Alerts
+    alert_risk_threshold: float = Field(default=0.7, description="P(> 2 min late) that raises an alert (dashboard red)")
+    alert_tick_s: float = Field(default=5.0, description="how often active alerts are checked against arrivals")

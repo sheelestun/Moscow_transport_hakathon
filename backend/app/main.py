@@ -19,7 +19,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import health, ingest, predictions, state as state_api
+from .alerts import AlertEngine
+from .api import alerts, health, ingest, predictions, state as state_api
 from .clock import DatasetClock
 from .config import Settings
 from .ingest import Ingest, ReplaySource, Traffic, load_traffic
@@ -56,6 +57,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state.predictor = Predictor(state.fleet, state.clock, ml, max_ping_age_s=settings.predict_max_ping_age_s,
                                     retry_s=settings.predict_retry_s)
         tasks.append(_background(state.predictor.run(settings.predict_tick_s), "predictor"))
+
+        state.alerts = AlertEngine(state.fleet, state.clock, risk_threshold=settings.alert_risk_threshold)
+        state.predictor.on_prediction(state.alerts.on_prediction)
+        tasks.append(_background(state.alerts.run(settings.alert_tick_s), "alerts"))
 
         state.ndtp = None
         if settings.ndtp_enabled:
@@ -95,6 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest.router)
     app.include_router(state_api.router)
     app.include_router(predictions.router)
+    app.include_router(alerts.router)
     return app
 
 

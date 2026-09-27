@@ -35,6 +35,11 @@ class StopVisit:
     trip: int
     idx_in_trip: int
 
+    @property
+    def label(self) -> str:
+        """What the dispatcher sees: the address, or a placeholder where the dataset has none."""
+        return self.name or "остановка без адреса"
+
 
 @dataclass(slots=True)
 class VehicleSchedule:
