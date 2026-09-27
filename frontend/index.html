@@ -26,14 +26,15 @@
 
     <div class="kpis">
       <div class="kpi"><span class="kpi__value" id="kpi-total">–</span><span class="kpi__label">на линии</span></div>
-      <div class="kpi kpi--red"><span class="kpi__value" id="kpi-red">–</span><span class="kpi__label">опоздают</span></div>
-      <div class="kpi kpi--yellow"><span class="kpi__value" id="kpi-yellow">–</span><span class="kpi__label">под риском</span></div>
+      <div class="kpi kpi--red" title="ТС с текущим опозданием > 2 мин или высоким риском"><span class="kpi__value" id="kpi-red">–</span><span class="kpi__label">опаздывают</span></div>
+      <div class="kpi kpi--yellow" title="ТС с умеренным риском опоздания"><span class="kpi__value" id="kpi-yellow">–</span><span class="kpi__label">под риском</span></div>
       <div class="kpi kpi--green"><span class="kpi__value" id="kpi-green">–</span><span class="kpi__label">по графику</span></div>
     </div>
 
     <div class="topbar__right">
       <div class="model" id="model-info" title="Точность и скорость ML-модели">модель: –</div>
       <div class="status" id="status"><span class="status__dot"></span><span id="status-text">подключение…</span></div>
+      <div class="sim-badge" id="sim-badge" hidden title="Датасет проигрывается ускоренно — за 1 секунду реального времени проходит N секунд датасета"></div>
       <div class="clock" id="clock" title="Московское время">--:--:--</div>
     </div>
   </header>

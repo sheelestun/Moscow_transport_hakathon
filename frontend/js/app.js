@@ -776,6 +776,20 @@ window.App = window.App || {};
     renderBunching();
     source.start(handlers);
 
+    // Бейдж «симуляция ×N»: датасет проигрывается ускоренно, из-за чего маркеры на карте
+    // едут быстрее реального — без индикатора это выглядит как баг («слишком быстро»).
+    // Обновляем раз в 30 сек: скорость меняется только через рестарт бэкенда с новым CLOCK_SPEED.
+    const refreshSimBadge = () => source.getHealth && source.getHealth().then((h) => {
+      const badge = $("sim-badge");
+      if (!badge) return;
+      const sp = h && h.clock && h.clock.speed;
+      if (!sp || Math.abs(sp - 1) < 0.05) { badge.hidden = true; return; }
+      badge.hidden = false;
+      badge.textContent = `×${Number.isInteger(sp) ? sp : sp.toFixed(1)} симуляция`;
+    }).catch(() => {});
+    refreshSimBadge();
+    setInterval(refreshSimBadge, 30_000);
+
     setInterval(renderRoutes, 2000);            // светофор маршрутов
     setInterval(renderHorizon, 1000);           // шкала «ближайшие 15 минут»
     renderVerified();
