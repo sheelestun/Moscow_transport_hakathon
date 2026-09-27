@@ -8,5 +8,6 @@ COPY index.html /usr/share/nginx/html/
 COPY css /usr/share/nginx/html/css
 COPY js /usr/share/nginx/html/js
 COPY entrypoint.sh /docker-entrypoint.d/40-inject-config.sh
-RUN chmod +x /docker-entrypoint.d/40-inject-config.sh
+# sed убирает \r: на Windows git отдаёт файл с CRLF, и /bin/sh такой скрипт не запускает
+RUN sed -i 's/\r$//' /docker-entrypoint.d/40-inject-config.sh && chmod +x /docker-entrypoint.d/40-inject-config.sh
 EXPOSE 80

@@ -12,25 +12,47 @@ window.App = window.App || {};
   const G = App.geo;
   const PLAN_SPEED = 18 / 3.6; // м/с — плановая средняя скорость с учётом остановок
   const HORIZON_S = 12.5 * 60; // середина окна прогноза 10–15 мин
+  // Опаздывающий водитель едет чуть быстрее плана и понемногу отыгрывает (~1 мин за 10 мин пути):
+  // в городе автобус сам почти не догоняет график — поэтому меры и нужны
+  const CATCHUP_KMH = 20;
 
   const REASONS = ["traffic_jam_ahead", "long_dwell", "speed_drop", "bunching", "accumulated_delay"];
+  // Меры — как у диспетчеров в Европе и США (обзор: Transport Reviews 2024, TCRP; приоритет — как iVRI/KAR в Нидерландах):
+  //   signal_priority — условный приоритет: светофор продлевает зелёный / раньше включает его
+  //                     только опаздывающему автобусу и только на несколько секунд;
+  //   hold_at_stop    — придержать на остановке автобус, который ДОГОНЯЕТ опаздывающий (против «паровозика»);
+  //   detour          — объезд, только если впереди затор/перекрытие;
+  //   short_turn      — развернуть раньше конечной: обратный рейс начинается вовремя;
+  //   express         — пустить экспрессом: проехать часть остановок без посадки;
+  //   add_reserve / adjust_interval — выпустить резерв / выровнять интервалы на всём маршруте.
   const REC_FOR_REASON = {
     traffic_jam_ahead: "detour",
     long_dwell: "adjust_interval",
     speed_drop: "signal_priority",
     bunching: "hold_at_stop",
-    accumulated_delay: "add_reserve",
+    accumulated_delay: "express",
   };
-  // Эффект мер в демо: какую долю опоздания мера «снимает» у опаздывающих ТС маршрута.
-  // Если мера бьёт в причину опоздания — эффект сильнее (поэтому рекомендация модели обычно лучшая).
-  const MEASURE_EFFECT = { add_reserve: 0.3, adjust_interval: 0.25, detour: 0.25, signal_priority: 0.25, hold_at_stop: 0.2 };
+  // Эффект «маршрутных» мер в демо: какую долю опоздания мера снимает у опаздывающих ТС маршрута.
+  // Скромно, как в жизни: резерв и выравнивание интервалов в первую очередь сокращают ожидание пассажиров,
+  // а опоздавшему автобусу помогают косвенно (меньше людей на остановках — короче стоянки).
+  const MEASURE_EFFECT = { add_reserve: 0.12, adjust_interval: 0.1 };
   const MEASURE_FITS = {
     add_reserve: ["accumulated_delay", "long_dwell"],
     adjust_interval: ["bunching", "long_dwell"],
     detour: ["traffic_jam_ahead"],
     signal_priority: ["speed_drop", "traffic_jam_ahead"],
     hold_at_stop: ["bunching"],
+    short_turn: ["accumulated_delay", "traffic_jam_ahead"],
+    express: ["accumulated_delay", "long_dwell"],
   };
+  const TSP_EXTEND_S = 10;      // приоритет: зелёный продлевается максимум на 10 с…
+  const TSP_EARLY_S = 15;       // …или включается раньше максимум на 15 с
+  const TSP_LATE_S = 60;        // приоритет получает только автобус, опаздывающий больше чем на минуту
+  const HOLD_MAX_S = 180;       // придержать можно не больше чем на 3 минуты
+  const EXPRESS_STOPS = 4;      // экспрессом — пропустить следующие 4 остановки…
+  const EXPRESS_SAVE_S = 30;    // …каждая пропущенная экономит ~30 с (торможение, посадка, разгон)
+  const EXPRESS_MIN_S = 180;    // экспрессом пускают, только если опоздание больше 3 минут…
+  const SHORT_TURN_MIN_S = 360; // …а разворачивают раньше конечной — только при опоздании больше 6 минут
   const FEATURES_FOR_REASON = {
     traffic_jam_ahead: ["traffic_score", "speed_avg_5min", "cur_dev_s", "hour_of_day"],
     long_dwell: ["dwell_last_stop_sec", "cur_dev_s", "hour_of_day", "headway_to_prev_sec"],
@@ -179,7 +201,7 @@ window.App = window.App || {};
           // частота новых проблем — в реальном времени, чтобы при любой скорости симуляции было что показать
           if (Math.random() < (0.001 * (24 / vehicles.length) * Math.sqrt(speedFactor / 5) * dt) / speedFactor) startTrouble(v);
           // Водитель догоняет график, если опаздывает, и придерживается, если идёт с опережением
-          const target = v.delay_now_sec > 20 ? 22 : v.delay_now_sec < -20 ? 14 : 18;
+          const target = v.delay_now_sec > 20 ? CATCHUP_KMH : v.delay_now_sec < -20 ? 14 : 18;
           if (v.speed < 8) v.speed = 12; // тронулся после светофора
           v.speed = clamp(v.speed + (target - v.speed) * 0.3 + rnd(-1, 1), 10, 28);
         }
@@ -191,9 +213,20 @@ window.App = window.App || {};
           v._recover -= d;
         }
 
+        // Придержан на остановке: стоит, пока не выйдет время
+        if (v._hold > 0) {
+          v._hold -= dt;
+          v.speed = 0;
+        }
+        // Экспресс: пропускает остановки — едет быстрее, пока не проедет последнюю пропускаемую
+        if (v._express && v._hold <= 0) {
+          v.speed = Math.max(v.speed, 24);
+          if (v._pos >= v._express.untilPos) v._express = null;
+        }
+
         // Движение по линии маршрута (реальное время)
         const before = along(v, v._pos);
-        let move = (v.speed / 3.6) * dt;
+        let move = v._hold > 0 ? 0 : (v.speed / 3.6) * dt;
         // Светофор впереди горит красным — останавливаемся перед стоп-линией (за 8 м)
         v._wait = null;
         for (const sg of D.signals) {
@@ -201,6 +234,11 @@ window.App = window.App || {};
           if (ds <= before - 1 || ds > before + move + 8) continue;
           const st = signalState(r, sg);
           if (st.state !== "red") continue;
+          // Условный приоритет: опаздывающему автобусу светофор продлевает зелёный или включает его раньше
+          if (tspActive(r) && v.delay_now_sec > TSP_LATE_S && (st.sinceRed <= TSP_EXTEND_S || st.left <= TSP_EARLY_S)) {
+            sg._grantUntil = simNow + Math.max(6000, 3000 * speedFactor); // «П» на карте — видно ~3 с при любой скорости
+            continue;
+          }
           move = Math.max(0, Math.min(move, ds - 8 - before));
           v._wait = { sig: sg, left: st.left };
           break;
@@ -255,8 +293,12 @@ window.App = window.App || {};
       if (v._recover > 0) d -= Math.min(v._recover, 1.2 * t);        // применённая мера
       // ожидаемые ожидания на светофорах впереди (если на маршруте не включён приоритет)
       const r = routeById[v.route_id];
-      if (!(r._priorityUntil > simNow)) d += r.dirs[v._d].waitPerM * PLAN_SPEED * t;
-      const catchUp = 1 - (22 / 3.6) / PLAN_SPEED;                     // < 0: догоняет график
+      // с приоритетом опаздывающий ждёт на светофорах заметно меньше (но не ноль: продление ограничено)
+      const tspK = tspActive(r) && v.delay_now_sec > TSP_LATE_S ? 0.35 : 1;
+      d += r.dirs[v._d].waitPerM * PLAN_SPEED * t * tspK;
+      if (v._hold > 0) d += v._hold;                                     // придержан — ещё постоит
+      if (v._express) d -= Math.min(v._express.save, v._express.save * t / 300); // экономия на пропущенных остановках
+      const catchUp = 1 - (CATCHUP_KMH / 3.6) / PLAN_SPEED;                     // < 0: догоняет график
       d = d > 0 ? Math.max(0, d + catchUp * rest) : Math.min(0, d - catchUp * rest);
       return d;
     }
@@ -271,8 +313,21 @@ window.App = window.App || {};
       const i = peers.findIndex((x) => x.vehicle_id === v.vehicle_id);
       const r = routeById[v.route_id]; const D = r && r.dirs[v._d];
       const plan = D ? Math.round(D.length / (peers.length * PLAN_SPEED)) : null;
-      if (i <= 0) return { headway: null, plan };
-      return { headway: Math.round((v._pos - peers[i - 1]._pos) / PLAN_SPEED), plan };
+      if (i >= peers.length - 1) return { headway: null, plan }; // впереди никого (в этом направлении)
+      return { headway: Math.round((peers[i + 1]._pos - v._pos) / PLAN_SPEED), plan }; // до автобуса впереди
+    };
+    // Автобус, который едет следом (тот, кого можно придержать)
+    const followerOf = (v) => {
+      const peers = vehicles.filter((x) => !x._reserve && x.route_id === v.route_id && x._d === v._d && x._pos < v._pos);
+      return peers.sort((a, b) => b._pos - a._pos)[0] || null;
+    };
+    // Рекомендация: при большом накопленном опоздании на радиальном маршруте — развернуть раньше конечной
+    const recFor = (v) => {
+      const reason = v._reason || "accumulated_delay";
+      if (reason === "accumulated_delay" && v.delay_pred_sec > SHORT_TURN_MIN_S && !routeById[v.route_id].loop) return "short_turn";
+      // «паровозик» лечат, придерживая догоняющего; если догоняющего нет — выравнивают интервалы
+      if (reason === "bunching" && !holdFor(v, followerOf(v))) return "adjust_interval";
+      return REC_FOR_REASON[reason];
     };
     const pub = (v) => {
       const level = App.riskLevel(v.risk_score);
@@ -284,6 +339,8 @@ window.App = window.App || {};
         updated_at: v.updated_at,
         headway_prev_sec: headway, plan_headway_sec: plan,
       };
+      if (v._hold > 0) out.holding_sec = Math.round(v._hold);          // придержан на остановке
+      if (v._express) out.express_until = v._express.untilName;        // идёт экспрессом
       // Стоит на красном — диспетчер видит, почему ТС не едет
       if (v._wait) {
         out.waiting_signal = {
@@ -295,7 +352,7 @@ window.App = window.App || {};
         const reason = v._reason || "accumulated_delay";
         Object.assign(out, {
           reason_pattern: reason,
-          recommendation: REC_FOR_REASON[reason],
+          recommendation: recFor(v),
           top_features: v._feats,
           confidence: v._conf,
         });
@@ -369,24 +426,97 @@ window.App = window.App || {};
     }
 
     // Состояние светофора сейчас: "green" | "red" | "priority" (включён приоритет для ОТ на маршруте)
+    // Условный приоритет: фазы светофоров НЕ меняются для всех — только отдельный опаздывающий автобус
+    // получает продление/ранний зелёный (см. step). «priority» — светофор прямо сейчас пропускает автобус.
+    const tspActive = (route) => route._tspUntil > simNow;
     function signalState(route, sig) {
-      if (route._priorityUntil > simNow) return { state: "priority", left: Math.round((route._priorityUntil - simNow) / 1000) };
       const t = (simNow / 1000 + sig.offset) % sig.cycle;
+      if (sig._grantUntil > simNow) return { state: "priority", left: Math.round((sig._grantUntil - simNow) / 1000) };
       return t < sig.green
         ? { state: "green", left: Math.round(sig.green - t) }
-        : { state: "red", left: Math.round(sig.cycle - t) };
+        : { state: "red", left: Math.round(sig.cycle - t), sinceRed: t - sig.green };
     }
 
-    // Прогноз после меры (детерминированно, чтобы цифры не прыгали между расчётами)
-    function afterMeasure(v, scenario) {
+    // Прогноз после меры (детерминированно, чтобы цифры не прыгали между расчётами).
+    // target — ТС, для которого диспетчер выбирает меру (развернуть / экспресс / придержать того, кто за ним).
+    function afterMeasure(v, scenario, target) {
       const before = v.delay_pred_sec;
-      if (before <= 30) return before; // идущим по графику мера не нужна
-      let k = MEASURE_EFFECT[scenario] || 0;
-      if (REC_FOR_REASON[v._reason] === scenario) k += 0.45;        // ровно то, что советует модель
-      else if (MEASURE_FITS[scenario] && MEASURE_FITS[scenario].includes(v._reason)) k += 0.2; // тоже бьёт в причину
+      const r = routeById[v.route_id];
       const hash = [...v.vehicle_id].reduce((a, c) => a + c.charCodeAt(0), 0) % 10; // небольшой разброс по ТС
-      k = Math.min(0.9, k * (0.9 + hash / 50));
-      return Math.round(before * (1 - k));
+      const fits = MEASURE_FITS[scenario] && MEASURE_FITS[scenario].includes(v._reason);
+      switch (scenario) {
+        case "signal_priority": {
+          // только опаздывающим; выигрыш — часть ожидания на светофорах за 10–15 мин
+          // NYC: TSP в среднем −14% времени в пути (от 1 до 25%) — у нас не больше 15% от 12,5 мин
+          if (v.delay_now_sec <= TSP_LATE_S) return before;
+          const wait = r.dirs[v._d].waitPerM * PLAN_SPEED * HORIZON_S;
+          return Math.round(before - Math.min(wait * 0.65 + (fits ? 15 : 0), 0.15 * HORIZON_S));
+        }
+        case "detour":
+          // объезд помогает, только если впереди затор; иначе объезд длиннее обычного пути
+          if (!target || v.vehicle_id !== target.vehicle_id) return before;
+          return v._reason === "traffic_jam_ahead" ? Math.round(before * 0.7) : before + 60;
+        case "short_turn":
+          // развернуть раньше конечной: обратный рейс начнётся по графику; пассажиры до конечной пересядут
+          if (!target || v.vehicle_id !== target.vehicle_id || r.loop || before < SHORT_TURN_MIN_S) return before;
+          return Math.min(before, 20 + hash * 3);
+        case "express":
+          if (!target || v.vehicle_id !== target.vehicle_id || before < EXPRESS_MIN_S) return before;
+          return Math.round(before - EXPRESS_STOPS * EXPRESS_SAVE_S);
+        case "hold_at_stop": {
+          // придерживаем того, кто ДОГОНЯЕТ target: он опоздает сильнее, зато интервал выровняется,
+          // и target перестаёт собирать чужих пассажиров (меньше стоянки на остановках)
+          if (!target) return before;
+          const f = followerOf(target);
+          const hold = holdFor(target, f);
+          if (!hold) return before;
+          if (f && v.vehicle_id === f.vehicle_id) return Math.round(before + hold * 0.6);
+          if (v.vehicle_id === target.vehicle_id) return Math.round(before - hold * (fits ? 0.8 : 0.4));
+          return before;
+        }
+        default: {
+          if (before <= 30) return before; // идущим по графику мера не нужна
+          let k = MEASURE_EFFECT[scenario] || 0;
+          if (fits) k += 0.1;
+          k = Math.min(0.3, k * (0.9 + hash / 50));
+          return Math.round(before * (1 - k));
+        }
+      }
+    }
+
+    // Сколько придержать догоняющий автобус: до планового интервала не хватает (план − факт), но не больше 3 мин
+    function holdFor(target, f) {
+      if (!f) return 0;
+      const plan = headwayFor(f).plan;
+      const gap = (target._pos - f._pos) / PLAN_SPEED; // сек между follower и target
+      if (!plan || gap >= plan * 0.8) return 0;         // интервал нормальный — держать незачем
+      return Math.round(Math.min(HOLD_MAX_S, (plan - gap) * 0.6));
+    }
+
+    // Пояснение к мере в окне сравнения: к кому применяется и чем платим
+    function measureNote(scenario, target) {
+      const r = target && routeById[target.route_id];
+      switch (scenario) {
+        case "signal_priority": return "Светофоры продлевают зелёный (до 10 с) или включают его раньше (до 15 с) только опаздывающим автобусам. Остальной поток почти не замечает.";
+        case "hold_at_stop": {
+          const f = target && followerOf(target);
+          const hold = holdFor(target, f);
+          return f && hold
+            ? `Придержать ТС ${f.vehicle_id} (едет следом) на ${Math.round(hold / 60 * 10) / 10} мин, чтобы не шли «паровозиком». Оно само опоздает сильнее.`
+            : "Интервал до следующего автобуса нормальный — придерживать некого.";
+        }
+        case "detour": return target && target._reason === "traffic_jam_ahead" ? "Объехать затор впереди." : "Затора впереди нет — объезд будет дольше обычного пути.";
+        case "short_turn":
+          if (r && r.loop) return "Кольцевой маршрут — развернуть нельзя.";
+          if (target && target.delay_pred_sec < SHORT_TURN_MIN_S) return "Разворачивают только при опоздании больше 6 минут — здесь не нужно.";
+          return "Развернуть до конечной и сразу встать в график обратно. Пассажиры до конечной пересядут на следующий автобус.";
+        case "express":
+          if (target && target.delay_pred_sec < EXPRESS_MIN_S) return "Экспрессом пускают только при опоздании больше 3 минут — здесь не нужно.";
+          return `Проехать следующие ${EXPRESS_STOPS} остановки без посадки. Людей с них заберёт следующий автобус.`;
+        case "add_reserve": return "Выпустить резервный автобус с конечной в разрыв интервала.";
+        case "adjust_interval": return "Выровнять интервалы между всеми автобусами маршрута.";
+      }
+      return "";
     }
 
     // Резервное ТС выходит с конечной и идёт по графику
@@ -559,12 +689,12 @@ window.App = window.App || {};
             if (headway < threshold) {
               out.push({
                 route_id, direction_id,
-                leader_id: a.vehicle_id, follower_id: b.vehicle_id,
+                leader_id: b.vehicle_id, follower_id: a.vehicle_id, // b впереди (дальше по трассе), a догоняет
                 headway_sec: Math.round(headway),
                 plan_headway_sec: Math.round(planHeadway),
                 ratio: +(headway / Math.max(planHeadway, 1)).toFixed(2),
-                leader: { lat: a.lat, lon: a.lon },
-                follower: { lat: b.lat, lon: b.lon },
+                leader: { lat: b.lat, lon: b.lon },
+                follower: { lat: a.lat, lon: a.lon },
               });
             }
           }
@@ -572,14 +702,15 @@ window.App = window.App || {};
         return out.sort((a, b) => a.ratio - b.ratio);
       },
       // What-if: как изменится прогноз у ТС маршрута, если применить меру
-      async whatif({ scenario, route_id, at_stop_id }) {
+      async whatif({ scenario, route_id, at_stop_id, vehicle_id }) {
         await new Promise((res) => setTimeout(res, 300 + Math.random() * 400)); // «модель считает»
+        const target = byId.get(vehicle_id) || null;
         const list = vehicles.filter((v) => v.route_id === route_id && !v._reserve).map((v) => {
-          const before = v.delay_pred_sec;
+          const before = v.delay_pred_sec, after = afterMeasure(v, scenario, target);
           return {
             vehicle_id: v.vehicle_id,
-            delay_before_sec: before, delay_after_sec: afterMeasure(v, scenario),
-            risk_before: v.risk_score, risk_after: +riskFromDelay(afterMeasure(v, scenario)).toFixed(3),
+            delay_before_sec: before, delay_after_sec: after,
+            risk_before: v.risk_score, risk_after: +riskFromDelay(after).toFixed(3),
           };
         });
         const avg = (key) => Math.round(list.reduce((s, x) => s + x[key], 0) / (list.length || 1));
@@ -590,18 +721,60 @@ window.App = window.App || {};
             avg_delay_before_sec: avg("delay_before_sec"), avg_delay_after_sec: avg("delay_after_sec"),
             red_before: red("risk_before"), red_after: red("risk_after"),
           },
+          note: measureNote(scenario, target),
           vehicles: list,
         };
       },
       // Применить меру в симуляции (только у мока; в живом режиме это решает диспетчер по-настоящему)
-      async applyMeasure({ scenario, route_id }) {
-        for (const v of vehicles.filter((x) => x.route_id === route_id)) {
-          const gain = v.delay_pred_sec - afterMeasure(v, scenario);
-          if (gain > 0) v._recover = (v._recover || 0) + Math.max(0, v.delay_now_sec) * (gain / Math.max(v.delay_pred_sec, 1));
-          if (MEASURE_FITS[scenario].includes(v._reason)) v._trouble = 0; // причина устранена
+      async applyMeasure({ scenario, route_id, vehicle_id }) {
+        const r = routeById[route_id];
+        const target = byId.get(vehicle_id) || null;
+        switch (scenario) {
+          case "signal_priority":
+            r._tspUntil = simNow + 20 * 60000; // 20 минут светофоры маршрута пропускают опаздывающих
+            break;
+          case "hold_at_stop": {
+            const f = target && followerOf(target);
+            const hold = holdFor(target, f);
+            if (f && hold) { f._hold = hold; target._recover = (target._recover || 0) + hold * 0.4; }
+            break;
+          }
+          case "short_turn":
+            if (target && !r.loop && r.dirs.length > 1 && target.delay_pred_sec >= SHORT_TURN_MIN_S) {
+              // разворот: встаёт в обратное направление примерно там же и идёт по графику
+              const D = r.dirs[target._d], back = (target._d + 1) % r.dirs.length;
+              target._pos = Math.max(0, r.dirs[back].length - target._pos * (r.dirs[back].length / D.length));
+              target._d = back;
+              target._trouble = 0;
+              newTrip(target, 0);
+              step(0);
+            }
+            break;
+          case "express":
+            if (target && target.delay_pred_sec >= EXPRESS_MIN_S) {
+              const D = r.dirs[target._d];
+              const ahead = D.stops.filter((st) => st.pos_m > target._pos).slice(0, EXPRESS_STOPS);
+              if (ahead.length) {
+                const last = ahead[ahead.length - 1];
+                target._express = { untilPos: last.pos_m + 5, untilName: last.name, save: ahead.length * EXPRESS_SAVE_S };
+                target._recover = (target._recover || 0) + ahead.length * EXPRESS_SAVE_S;
+              }
+            }
+            break;
+          case "detour":
+            if (target && target._reason === "traffic_jam_ahead") {
+              target._trouble = 0;
+              target._recover = (target._recover || 0) + Math.max(0, target.delay_pred_sec - afterMeasure(target, "detour", target)) * 0.6;
+            }
+            break;
+          default:
+            for (const v of vehicles.filter((x) => x.route_id === route_id)) {
+              const gain = v.delay_pred_sec - afterMeasure(v, scenario, target);
+              if (gain > 0) v._recover = (v._recover || 0) + Math.max(0, v.delay_now_sec) * (gain / Math.max(v.delay_pred_sec, 1));
+              if (MEASURE_FITS[scenario].includes(v._reason)) v._trouble = 0; // причина устранена
+            }
+            if (scenario === "add_reserve") addReserve(route_id);
         }
-        if (scenario === "add_reserve") addReserve(route_id);
-        if (scenario === "signal_priority") routeById[route_id]._priorityUntil = simNow + 20 * 60000; // зелёная волна на 20 мин
         return { ok: true };
       },
       // Светофоры маршрута с текущей фазой (только у мока: фазы — симуляция)
