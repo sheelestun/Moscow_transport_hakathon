@@ -205,7 +205,7 @@ button { font: inherit; color: inherit; }
 .level--yellow { background: rgba(255,176,32,.16); color: var(--yellow); }
 .level--green { background: rgba(47,210,122,.16); color: var(--green); }
 
-.src-badge { margin-left: 6px; padding: 2px 7px; border-radius: 4px; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .05em; vertical-align: middle; }
+.src-badge { padding: 2px 7px; border-radius: 4px; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .05em; vertical-align: middle; align-self: center; }
 .src-badge--live { background: rgba(47,210,122,.14); color: var(--green); border: 1px solid rgba(47,210,122,.4); }
 .src-badge--replay { background: rgba(155,170,190,.10); color: var(--muted); border: 1px solid rgba(155,170,190,.3); }
 
