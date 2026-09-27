@@ -17,7 +17,7 @@ Built piece by piece; each piece is tested before the next starts.
 | 6 | ML client + predictor (target stop in (T+10, T+15] min, `/predict/batch`) | done |
 | 7 | Alerts: threshold, dedup, cause, verification against the actual arrival | done |
 | 8 | Postgres history | done |
-| 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | |
+| 9 | Dashboard REST + WebSocket (timestamps sent to the UI in wall time, not dataset time) | done |
 | 10 | Deploy: nginx vhosts (`api.` / `app.` / `docs.` mowtransit.ru), TLS, compose | |
 
 ## Layout (so far)
@@ -28,6 +28,9 @@ app/
   config.py       settings from env vars (DATASET_DIR, CLOCK_START, NDTP_PORT, ...)
   clock.py        DatasetClock: wall time ↔ the dataset's timeline (2026-01-06, Moscow-local)
   api/
+    dashboard.py  the dashboard's REST API (frontend/js/api.js): routes, vehicles, schedule, metrics, what-if
+    ws.py         WS /ws: vehicle.update every second, alert.* and whatif.result as they happen
+    views.py      routes/vehicles/schedule payloads in the shapes frontend/js/mock.js defines
     health.py     GET /health (short status), GET /clock
     ingest.py     GET /ingest/ndtp (listener), GET /ingest/vehicles (latest ping per vehicle + source)
     state.py      GET /state/vehicles (derived features), GET /state/vehicles/{tr_id}/arrivals
@@ -186,29 +189,34 @@ for the server:
 Re-run on the VPS: `python backend/scripts/ndtp_loadtest.py --units 8000 --loop uvloop` (needs `uvloop`;
 check `sysctl net.core.somaxconn` ≥ 4096).
 
-## Deferred
+## Dashboard API (criterion 4)
 
-### `/metrics/worst_stops`, `/metrics/bunching`, `/routes/{route_id}/signals`
+Everything `frontend/js/api.js` calls, in the shapes `frontend/js/mock.js` defines — the real dashboard runs
+against it unchanged (`index.html?mode=live&api=…&ws=…`), checked in a browser with the locally trained model.
 
-Not implemented yet. The dashboard calls all three through `try/catch` in `frontend/js/api.js`
-and hides the widgets on failure, so the dashboard works without them. Shapes to match are in
-`frontend/js/mock.js`:
+- **Routes**: the dataset has no route ids, so each scheduled vehicle is a "route", and every distinct trip
+  shape (first stop → last stop) is a direction with its own line. The map projects the vehicle and its
+  schedule onto the line of the vehicle's *current* trip. Lines are stop-to-stop straight segments (no road
+  geometry in the dataset).
+- **Vehicles**: position, current deviation (`delay_now_sec`), the model's forecast for the target stop
+  (`delay_pred_sec`, `risk_score`, cause, recommendation).
+- **Schedule** of the current trip: actual (GPS-detected) arrivals behind the vehicle; the target stop with
+  the model's forecast; other upcoming stops with the current deviation carried forward (`estimate` says
+  which).
+- **What-if**: ML `/whatif/predict` on the vehicle's latest forecast request.
+- **WebSocket** `/ws`: snapshot on connect, `vehicle.update` every `WS_TICK_S`, alert events as they happen.
+- All user-facing timestamps are wall-clock (the dashboard compares them with `Date.now()`).
 
-- **`GET /metrics/worst_stops?limit=10`** (`mock.js` `getWorstStops`) — list of
-  `{route_id, direction_id, stop_id, name, lat, lon, avg_delay_sec, max_delay_sec, vehicles}`,
-  only `avg_delay_sec >= 30`, sorted by `avg_delay_sec` desc. Mock aggregates predicted delays of
-  upcoming stops; with real data this is a query over the `predictions` table.
-- **`GET /metrics/bunching`** (`mock.js` `getBunching`) — pairs of vehicles on the same
-  route/direction whose headway < `max(45 s, 0.6 × planned headway)`:
-  `{route_id, direction_id, leader_id, follower_id, headway_sec, plan_headway_sec, ratio,
-  leader: {lat, lon}, follower: {lat, lon}}`, sorted by `ratio` asc. Needs a real notion of
-  route + direction, which the dataset doesn't have (route_id := tr_id) — likely stays unimplemented.
-- **`GET /routes/{route_id}/signals`** (`mock.js` `getSignals`) — traffic lights with phase state.
-  The dataset has no traffic-light data: **not implementing**.
+Always empty, by design: `GET /metrics/bunching` (needs vehicles sharing a route and direction; the dataset
+has no route relations) and `GET /routes/{id}/signals` (no traffic-light data). Both return `[]` rather than
+404 so the dashboard's widgets stay quiet.
 
-**Frontend bug to hand to Вероника** (blocks `signals` regardless of the backend):
-`frontend/js/app.js:305` calls `source.getSignals(r.route_id).forEach(...)` synchronously. In the
-mock `getSignals` is synchronous; in `api.js` it is `async` and returns a Promise, so in live mode
-this throws `TypeError` on every `vehicle.update` — before `renderVehicle()` runs, so the selected
-vehicle's card stops refreshing. Fix on her side: drop `getSignals` from the live source, or
-`await` it outside the per-message path.
+### Frontend bug (for Вероника)
+
+`frontend/js/app.js:305` calls `source.getSignals(r.route_id).forEach(...)` synchronously. In `mock.js`
+`getSignals` is synchronous; in `api.js` it's `async`, so in live mode this throws
+`TypeError: source.getSignals(...).forEach is not a function` on **every** `vehicle.update` — before
+`renderVehicle()` runs — and also during the initial load (`app.js:728`: "Не удалось загрузить начальные
+данные"). The dashboard recovers from the WebSocket stream, but the selected vehicle's card doesn't refresh
+from it. Smallest fix: remove `getSignals` from the live source in `frontend/js/api.js` (live mode has no
+signals, and `app.js` already checks `if (source.getSignals)`).

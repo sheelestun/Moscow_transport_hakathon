@@ -20,7 +20,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .alerts import AlertEngine
-from .api import alerts, health, history, ingest, predictions, state as state_api
+from .api import alerts, dashboard, health, history, ingest, predictions, state as state_api, ws
+from .api.alerts import alert_payload
+from .api.views import RouteCatalog
 from .clock import DatasetClock
 from .config import Settings
 from .db import History
@@ -63,6 +65,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                    id_prefix=f"a-{_base36(int(state.started_at))}")
         state.predictor.on_prediction(state.alerts.on_prediction)
         tasks.append(_background(state.alerts.run(settings.alert_tick_s), "alerts"))
+
+        state.routes = RouteCatalog(schedules)
+        state.metrics_cache = {"at": 0.0, "ml": None}
+        state.hub = ws.Hub()
+        state.alerts.on_event(lambda kind, a: state.hub.publish(alert_payload(state.clock, a, kind)))
+        tasks.append(_background(state.hub.run(lambda: {"type": "vehicle.update",
+                                                        "vehicles": dashboard.vehicles_now(state)},
+                                               settings.ws_tick_s), "ws-hub"))
 
         state.history = None
         if settings.database_url:
@@ -109,6 +119,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
+    app.include_router(dashboard.router)
+    app.include_router(ws.router)
     app.include_router(health.router)
     app.include_router(ingest.router)
     app.include_router(state_api.router)

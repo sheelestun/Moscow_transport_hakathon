@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     alert_risk_threshold: float = Field(default=0.7, description="P(> 2 min late) that raises an alert (dashboard red)")
     alert_tick_s: float = Field(default=5.0, description="how often active alerts are checked against arrivals")
 
+    # Dashboard
+    ws_tick_s: float = Field(default=1.0, description="how often vehicle.update is pushed over the WebSocket")
+    ui_max_ping_age_s: float = Field(default=1800.0, description="vehicles silent longer are hidden from the map")
+
     # History (Postgres); unset = history off
     database_url: str | None = Field(default=None, description="e.g. postgresql://msk:msk@postgres:5432/msk_transport")
     history_flush_s: float = 1.0

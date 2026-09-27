@@ -209,11 +209,16 @@ def level_for(risk: float) -> str:
     return "red" if risk >= RISK_RED else "yellow" if risk >= RISK_YELLOW else "green"
 
 
+def risk_from_delay(d: float) -> float:
+    """The ML contract's fallback risk: sigmoid((delay − 120) / 60), i.e. 0.5 at +2 min late."""
+    z = (d - 120.0) / 60.0
+    return 1 / (1 + math.exp(-z)) if z >= 0 else math.exp(z) / (1 + math.exp(z))
+
+
 def fallback_response(req: dict) -> dict:
     """What the backend answers itself when ML is down: the baseline (delay = current deviation), same shape as ML."""
     d = float(req["cur_dev_s"])
-    z = (d - 120.0) / 60.0
-    risk = 1 / (1 + math.exp(-z)) if z >= 0 else math.exp(z) / (1 + math.exp(z))
+    risk = risk_from_delay(d)
     level = level_for(risk)
     return {
         "sample_id": req["sample_id"], "delay_pred_sec": round(d, 1), "risk_score": round(risk, 3), "confidence": 0.05,

@@ -94,6 +94,7 @@ class HealthResponse(BaseModel):
     predictor: PredictorStatus
     alerts: AlertsStatus
     history: HistoryStatus
+    ws_clients: int = Field(description="dashboards connected over WebSocket")
 
 
 class ClockResponse(BaseModel):
@@ -159,6 +160,7 @@ def health(request: Request) -> HealthResponse:
                                   ml_batch_ms_p95=pred["ml_batch_ms_p95"]),
         alerts=_alerts_status(state.alerts.snapshot()),
         history=history,
+        ws_clients=len(state.hub.clients),
     )
 
 
