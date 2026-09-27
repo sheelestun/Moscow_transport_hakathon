@@ -128,14 +128,14 @@ window.App = window.App || {};
         if (!m) {
           const el = document.createElement("button");
           el.className = "veh" + (v.is_reserve ? " veh--reserve" : "");
-          el.setAttribute("aria-label", `ТС ${v.vehicle_id}, маршрут ${App.routeLabel(v.route_id)}`);
-          el.innerHTML = `<span>${v.is_reserve ? "Р" : App.esc(App.routeLabel(v.route_id))}</span>`;
+          el.setAttribute("aria-label", `ТС ${v.vehicle_id}, маршрут ${App.routeLabel(v.route_id, v.direction_id)}`);
+          el.innerHTML = `<span>${v.is_reserve ? "Р" : App.esc(App.routeLabel(v.route_id, v.direction_id))}</span>`;
           if (v.is_reserve) el.title = "Резервное ТС";
           el.addEventListener("click", (ev) => { ev.stopPropagation(); handlers.onVehicle && handlers.onVehicle(v.vehicle_id); });
           el.addEventListener("mouseenter", () => showPopup(v.vehicle_id));
           el.addEventListener("mouseleave", () => popup.remove());
           const marker = new maplibregl.Marker({ element: el }).setLngLat([v.lon, v.lat]).addTo(map);
-          m = { marker, el, from: [v.lon, v.lat], to: [v.lon, v.lat], t0: now, dur: 1000, lastAt: now, data: v };
+          m = { marker, el, from: [v.lon, v.lat], to: [v.lon, v.lat], t0: now, dur: 1000, lastAt: now, data: v, dirId: v.direction_id };
           markers.set(v.vehicle_id, m);
         } else if (v.lon !== m.to[0] || v.lat !== m.to[1]) {
           // Растягиваем анимацию на реальный интервал между апдейтами (traffic.csv шлёт пинги
@@ -151,6 +151,13 @@ window.App = window.App || {};
           m.lastAt = now;
         }
         m.data = v;
+        if (m.dirId !== v.direction_id) {
+          // ТС переехало на другой рейс/маршрут (см. RouteCatalog.direction — считается заново на каждый опрос):
+          // перерисовываем бейдж, иначе на нём так и останется номер маршрута, с которым точка была создана.
+          m.dirId = v.direction_id;
+          m.el.setAttribute("aria-label", `ТС ${v.vehicle_id}, маршрут ${App.routeLabel(v.route_id, v.direction_id)}`);
+          if (!v.is_reserve) m.el.querySelector("span").textContent = App.routeLabel(v.route_id, v.direction_id);
+        }
         m.el.style.display = isShown(v.route_id) ? "" : "none";
         if (m.level !== level) {
           m.el.classList.remove("veh--red", "veh--yellow", "veh--green");
@@ -301,7 +308,7 @@ window.App = window.App || {};
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
         "line-color": COLORS.grey,
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 5],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.5, 14, 2.5, 17, 3.5],
         "line-opacity": 0.85,
       },
     });
@@ -310,18 +317,18 @@ window.App = window.App || {};
       id: "sel-glow", type: "line", source: "sel-line",
       filter: ["!=", ["get", "level"], "passed"],
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": byLevel(COLORS.grey), "line-width": 16, "line-blur": 10, "line-opacity": 0.45 },
+      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 5, 14, 8, 17, 10], "line-blur": 6, "line-opacity": 0.35 },
     });
     map.addLayer({
       id: "sel-passed", type: "line", source: "sel-line",
       filter: ["==", ["get", "level"], "passed"],
-      paint: { "line-color": COLORS.passed, "line-width": 3, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
+      paint: { "line-color": COLORS.passed, "line-width": 2, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
     });
     map.addLayer({
       id: "sel-line", type: "line", source: "sel-line",
       filter: ["!=", ["get", "level"], "passed"],
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 7] },
+      paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 14, 3.5, 17, 4.5] },
     });
     // Светофоры: реальные места (OpenStreetMap), фазы — симуляция.
     // Значок как у настоящего светофора: тёмный корпус, горит красная или зелёная лампа.
@@ -393,7 +400,7 @@ window.App = window.App || {};
     const reason = v.reason_pattern ? `<div class="pop__reason">${App.esc(App.labels.t("reasons", v.reason_pattern))}</div>` : "";
     const wait = v.waiting_signal ? `<div class="pop__wait">Стоит на красном · ${v.waiting_signal.waited_sec} с</div>` : "";
     popup.setLngLat(m.marker.getLngLat()).setHTML(
-      `<div class="pop"><div class="pop__head"><span class="route-chip">${App.esc(App.routeLabel(v.route_id))}</span> ТС ${App.esc(v.vehicle_id)}</div>
+      `<div class="pop"><div class="pop__head"><span class="route-chip">${App.esc(App.routeLabel(v.route_id, v.direction_id))}</span> ТС ${App.esc(v.vehicle_id)}</div>
        <div class="pop__row">сейчас <b>${App.fmtDelayShort(v.delay_now_sec)}</b> · через 10–15 мин <b class="t-${level}">${App.fmtDelayShort(v.delay_pred_sec)}</b></div>
        ${wait}${reason}<div class="pop__hint">нажмите, чтобы открыть</div></div>`
     ).addTo(map);

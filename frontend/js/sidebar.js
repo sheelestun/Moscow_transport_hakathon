@@ -23,7 +23,7 @@ window.App = window.App || {};
       if (!alerts.length) {
         ul.innerHTML = opts.noLines
           ? `<li class="empty empty--muted">Линии не выбраны. Нажмите «Линии» на карте и отметьте нужные.</li>`
-          : `<li class="empty">Всё по графику. Опозданий в ближайшие 15 минут не ожидается.</li>`;
+          : `<li class="empty">Всё по графику</li>`;
         return;
       }
       ul.innerHTML = alerts.map((a) => {
@@ -88,13 +88,16 @@ window.App = window.App || {};
       const level = App.riskLevel(v.risk_score);
       const target = schedule && schedule.stops.find((s) => s.is_target);
 
-      // --- Шапка ---
-      const whereName = alert ? alert.target_stop_name || alert.target_stop_id : target && target.name;
-      const whereTime = alert ? alert.eta_incident : target && (target.time_pred || target.time_plan);
+      // --- Шапка: две плашки «Сейчас» и «Через 10–15 мин» (как в западных диспетчерских системах:
+      //     отклонение от графика в целых минутах, и сразу видно, к какому моменту относится цифра) ---
+      const predSec = v.delay_pred_sec;
+      const nowLevel = App.delayLevel(v.delay_now_sec);
+      const futLevel = App.delayLevel(predSec);
+      const conf = v.confidence != null ? v.confidence : alert && alert.confidence != null ? alert.confidence : null;
       $("vh-hero").innerHTML = `
         <div class="hero hero--${level}">
           <div class="hero__top">
-            <span class="route-chip route-chip--lg">${App.esc(App.routeLabel(v.route_id))}</span>
+            <span class="route-chip route-chip--lg">${App.esc(App.routeLabel(v.route_id, v.direction_id))}</span>
             <div class="hero__title">
               <b>ТС ${App.esc(v.vehicle_id)}</b>
               <span class="muted">${App.esc(schedule ? schedule.direction : route ? route.name : "")}</span>
@@ -103,20 +106,32 @@ window.App = window.App || {};
             ${sourceBadgeHtml(v.source)}
           </div>
           ${dataStatusHtml(v.data_status)}
-          <div class="hero__label">Прогноз через 10–15 минут</div>
-          <div class="hero__big">${App.fmtDelay(v.delay_pred_sec)}${intervalHtml(v.delay_interval_sec, v.delay_pred_sec)}</div>
+
+          <div class="nf">
+            <div class="nf__box nf__box--${nowLevel}">
+              <span class="nf__when">Сейчас</span>
+              <b class="nf__val">${Math.abs(v.delay_now_sec) < 60 ? "0 мин" : App.fmtDelayShort(v.delay_now_sec)}</b>
+              ${Math.abs(v.delay_now_sec) < 60 || v.delay_now_sec < 0 ? `<span class="nf__txt">${App.fmtDelayWords(v.delay_now_sec)}</span>` : ""}
+            </div>
+            <div class="nf__arrow" aria-hidden="true">→</div>
+            <div class="nf__box nf__box--${futLevel} nf__box--main" title="Прогноз модели: ${App.fmtDelay(predSec)}">
+              <span class="nf__when">Через 10–15 мин</span>
+              <b class="nf__val">${Math.abs(predSec) < 60 ? "0 мин" : App.fmtDelayShort(predSec)}</b>
+              ${Math.abs(predSec) < 60 || predSec < 0 ? `<span class="nf__txt">${App.fmtDelayWords(predSec, true)}</span>` : ""}
+            </div>
+          </div>
+          ${intervalHtml(v.delay_interval_sec, predSec)}
           ${probabilitiesHtml(v)}
-          ${whereName ? `<div class="hero__where">к остановке «${App.esc(whereName)}» · ${App.fmtTime(whereTime)} (${App.fmtIn(whereTime)})</div>` : ""}
           ${hoursHtml(hours)}
           ${problemHtml(schedule, level)}
           ${v.waiting_signal && v.waiting_signal.waited_sec >= 2 ? `<div class="waiting"><span class="sig-ico"><i class="r"></i><i class="g"></i></span>
-            <span>Сейчас стоит на красном светофоре <b>${v.waiting_signal.waited_sec} с</b> · зелёный через ${v.waiting_signal.left_sec} с</span></div>` : ""}
-          <div class="hero__grid">
-            <div><span class="muted">Сейчас</span><b class="t-${App.delayLevel(v.delay_now_sec)}">${App.fmtDelayShort(v.delay_now_sec)}</b></div>
-            <div><span class="muted">Скорость</span><b>${v.speed ?? "—"} км/ч</b></div>
-            <div><span class="muted">Риск</span><b>${App.pct(v.risk_score)}</b></div>
-            <div><span class="muted">Уверенность</span><b>${v.confidence != null ? App.pct(v.confidence) : alert && alert.confidence != null ? App.pct(alert.confidence) : "—"}</b></div>
-            ${headwayHtml(v)}
+            <span>На красном <b>${v.waiting_signal.waited_sec} с</b> · зелёный через ${v.waiting_signal.left_sec} с</span></div>` : ""}
+          ${v.holding_sec > 0 ? `<div class="gap gap--warn">Придержан на остановке — ещё <b>${Math.ceil(v.holding_sec / 60 * 10) / 10} мин</b></div>` : ""}
+          ${v.express_until ? `<div class="gap gap--ok">Экспрессом до «${App.esc(v.express_until)}»</div>` : ""}
+          ${headwayHtml(v)}
+          <div class="hero__foot">
+            <span>Скорость <b>${v.speed ?? "—"} км/ч</b></span>
+            ${conf != null ? `<span title="Насколько модель уверена в этом прогнозе">Надёжность прогноза <b>${App.pct(conf)}</b></span>` : ""}
           </div>
         </div>`;
 
@@ -126,31 +141,34 @@ window.App = window.App || {};
       const whyKey = level === "green" ? "green" : reason + feats.map((f) => f.name).join();
       if (whyKey !== this._whyKey) {
         this._whyKey = whyKey;
-        $("vh-why").innerHTML = level === "green"
-          ? `<h4>Почему такой прогноз</h4><p class="why__ok">Идёт по графику. Модель не видит признаков опоздания в ближайшие 15 минут.</p>`
-          : `<h4>Почему опаздывает</h4>
-             <p class="why__title">${t("reasons", reason)}</p>
-             <p class="why__text">${t("explanations", reason)}</p>
-             ${feats.length ? `<div class="feats"><div class="muted small">Что сильнее всего повлияло на прогноз</div>${featBars(feats)}</div>` : ""}`;
+        // По графику — объяснять нечего, статус уже в шапке
+        $("vh-why").hidden = level === "green";
+        // Как в западных диспетчерских: причина одной строкой. Разбор модели (веса признаков) —
+        // свёрнут: диспетчеру он не нужен для решения, но его можно показать жюри.
+        $("vh-why").innerHTML = level === "green" ? "" : `<p class="why__line"><span class="muted">Причина:</span> <b>${t("reasons", reason)}</b></p>
+             ${feats.length ? `<details class="why__more"><summary>Как модель это поняла</summary>
+               <p class="why__text">${t("explanations", reason)}</p>
+               <div class="feats">${featBars(feats.slice(0, 3))}</div></details>` : ""}`;
       }
 
       // --- Что делать (перерисовываем только при смене уровня/алерта, чтобы не сбить выбор в What-if) ---
       const rec = App.toScenario((alert && alert.recommendation) || v.recommendation);
-      const applied = this._ctx.isApplied(v.route_id);
-      const actKey = level === "green" ? "green" : `${rec}|${alert ? alert.alert_id : ""}|${applied ? applied.at : ""}`;
+      const applied = this._ctx.appliedFor(); // уже применённые меры (их может быть несколько)
+      const recDone = applied.some((x) => x.scenario === rec);
+      const actKey = level === "green" && !applied.length ? "green" : `${level}|${rec}|${alert ? alert.alert_id : ""}|${applied.map((x) => x.scenario + x.at).join()}`;
       if (actKey !== this._actKey) {
         this._actKey = actKey;
         const ctx = this._ctx;
-        if (level === "green") {
+        if (level === "green" && !applied.length) {
           $("vh-act").innerHTML = "";
         } else {
-          $("vh-act").innerHTML = actHtml(rec, alert, null, applied, ctx.canApply);
+          $("vh-act").innerHTML = actHtml(rec, alert, null, applied, ctx.canApply, v.vehicle_id);
           bindAct(ctx, rec);
           // Эффект рекомендованной меры считаем сразу — чтобы диспетчер видел пользу без лишних кликов
-          if (App.labels.scenarios[rec] && !applied) {
+          if (App.labels.scenarios[rec] && !recDone) {
             ctx.onRecEffect(rec).then((eff) => {
               if (this._actKey !== actKey) return;
-              $("vh-act").innerHTML = actHtml(rec, alert, eff, applied, ctx.canApply);
+              $("vh-act").innerHTML = actHtml(rec, alert, eff, applied, ctx.canApply, v.vehicle_id);
               bindAct(ctx, rec);
             }).catch(() => {});
           }
@@ -196,27 +214,27 @@ window.App = window.App || {};
     return `<div class="hero__data-status hero__data-status--${cfg.cls}">${cfg.text}</div>`;
   }
 
-  // 80% доверительный интервал прогноза: показываем в виде "±Xс (80%)" рядом с большой цифрой
-  function intervalHtml(interval, mean) {
+  // 80% доверительный интервал прогноза — словами: «скорее всего от +5 до +9 мин»
+  function intervalHtml(interval) {
     if (!Array.isArray(interval) || interval.length !== 2) return "";
     const [lo, hi] = interval;
-    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return "";
-    const margin = Math.round((hi - lo) / 2);
-    if (margin <= 0) return "";
-    return `<span class="hero__interval" title="80% доверительный интервал прогноза">±${margin}с (80%)</span>`;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi - lo < 60) return "";
+    return `<p class="nf__range" title="80% доверительный интервал прогноза">Скорее всего от <b>${App.fmtDelayShort(lo)}</b> до <b>${App.fmtDelayShort(hi)}</b></p>`;
   }
 
   // Интервал до предыдущего ТС того же маршрута (bus bunching, Daganzo 2009).
   // Если факт < 60% плана — «паровозик»: их надо разводить (hold_at_stop / adjust_interval).
   function headwayHtml(v) {
     if (!Number.isFinite(v.headway_prev_sec)) return "";
-    const h = Math.max(0, Math.round(v.headway_prev_sec));
-    const plan = Number.isFinite(v.plan_headway_sec) && v.plan_headway_sec > 0 ? Math.round(v.plan_headway_sec) : null;
+    const h = Math.max(0, v.headway_prev_sec);
+    const plan = Number.isFinite(v.plan_headway_sec) && v.plan_headway_sec > 0 ? v.plan_headway_sec : null;
     const ratio = plan ? h / plan : null;
-    const cls = ratio != null && ratio < 0.6 ? "t-red" : ratio != null && ratio < 0.85 ? "t-yellow" : "";
-    const min = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-    const title = plan ? `интервал до предыдущего ТС · план ${min(plan)}` : "интервал до предыдущего ТС";
-    return `<div title="${title}"><span class="muted">Интервал</span><b class="${cls}">${min(h)}${plan ? ` <span class="muted small">/ ${min(plan)}</span>` : ""}</b></div>`;
+    const m = (s) => Math.max(1, Math.round(s / 60));
+    if (ratio != null && ratio < 0.85) {
+      const cls = ratio < 0.6 ? "bad" : "warn";
+      return `<div class="gap gap--${cls}">Догоняет автобус впереди: <b>${m(h)} мин</b> вместо ${m(plan)}</div>`;
+    }
+    return ""; // интервал в норме — не показываем
   }
 
   // Вероятности исходов: раньше / в срок / позже
@@ -255,9 +273,8 @@ window.App = window.App || {};
     if (!p) return "";
     return `
       <div class="problem">
-        <span class="problem__label">Проблемный участок</span>
-        <b>${App.esc(p.from)} → ${App.esc(p.to)}</b>
-        <span class="problem__grow">опоздание вырастет на ${App.fmtDelayShort(p.grow)} за перегон</span>
+        <span class="problem__label">Теряет время</span>
+        <b>${App.esc(p.from)} → ${App.esc(p.to)} <span class="problem__grow">${App.fmtDelayShort(p.grow)}</span></b>
       </div>`;
   }
 
@@ -273,36 +290,40 @@ window.App = window.App || {};
   }
 
   // Блок «Рекомендация»: мера, её эффект и кнопка «Применить»
-  function actHtml(rec, alert, eff, applied, canApply) {
+  function actHtml(rec, alert, eff, applied, canApply, vid) {
     const known = !!App.labels.scenarios[rec];
+    const recDone = applied.some((x) => x.scenario === rec);
     let effect = "";
-    if (applied) {
-      effect = `<div class="rec__done">✓ Применено в ${App.fmtTime(new Date(applied.at))}: ${App.esc(App.labels.scenarios[applied.scenario])}. Опоздания на маршруте отыгрываются — следите за картой.</div>`;
+    const done = applied.length ? `<div class="rec__done">✓ Применено: ${applied.map((x) =>
+      `${App.esc(App.labels.scenarios[x.scenario])} (${App.fmtTime(new Date(x.at))})`).join(", ")}</div>` : "";
+    if (recDone) {
+      effect = "";
     } else if (known && !eff) {
       effect = `<div class="rec__effect rec__effect--loading">Считаем эффект…</div>`;
     } else if (eff) {
-      const s = eff.summary;
-      const gain = s.avg_delay_before_sec - s.avg_delay_after_sec;
+      // Эффект для ЭТОГО автобуса и сколько опаздывающих останется на маршруте
+      const e = App.measureEffect(eff, vid);
+      const lv = (x) => App.delayLevel(x);
+      // Мера уменьшает опоздание (в первую очередь прогноз «через 10–15 мин», понемногу и текущее).
+      // Показываем только выигрыш: «было/станет» видно в плашках «Сейчас» и «Через 10–15 мин» после применения.
+      const g = Math.abs(e.gain);
       effect = `
-        <div class="rec__effect">
+        <div class="rec__effect rec__effect--one">
           <div>
-            <span class="rec__num ${gain > 0 ? "t-green" : "t-red"}">${gain > 0 ? "−" : "+"}${App.fmtDelayShort(Math.abs(gain)).replace(/^[+−]/, "")}</span>
-            <span class="rec__cap">среднее опоздание<br>на маршруте</span>
+            <span class="rec__num ${e.gain > 0 ? "t-green" : e.gain < 0 ? "t-red" : "muted"}">${e.gain === 0 ? "не поможет" : (e.gain > 0 ? "−" : "+") + (g < 60 ? `${Math.round(g)} с` : `${Math.round(g / 60)} мин`)}</span>
           </div>
-          <div>
-            <span class="rec__num">${s.red_before} → <span class="${s.red_after < s.red_before ? "t-green" : ""}">${s.red_after}</span></span>
-            <span class="rec__cap">опаздывающих<br>автобусов</span>
-          </div>
-        </div>`;
+        </div>
+        ${e.redAfter < e.redBefore ? `<p class="rec__more">И на маршруте станет меньше опаздывающих автобусов: ${e.redBefore} → ${e.redAfter}</p>` : ""}`;
     }
     return `
       <div class="block block--rec">
         <h4>Рекомендация</h4>
         <p class="rec">${t("recommendations", rec)}</p>
+        ${done}
         ${effect}
         <div class="row">
-          ${known && canApply && !applied ? `<button class="btn" id="apply-btn">Применить</button>` : ""}
-          <button class="btn btn--ghost" id="whatif-btn">Другие меры</button>
+          ${known && canApply && !recDone ? `<button class="btn" id="apply-btn">Применить</button>` : ""}
+          <button class="btn btn--ghost" id="whatif-btn">${applied.length ? "Добавить ещё меру" : "Другие меры"}</button>
         </div>
       </div>`;
   }

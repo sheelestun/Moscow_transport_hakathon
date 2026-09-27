@@ -17,6 +17,8 @@ window.App = window.App || {};
 
     return {
       name: "live",
+      // Меры, которые понимает бэкенд (POST /whatif). short_turn и express пока есть только в демо.
+      scenarios: ["add_reserve", "adjust_interval", "detour", "signal_priority", "hold_at_stop"],
       async getRoutes() { return list(await get("/routes"), "routes"); },
       async getVehicles() { return list(await get("/vehicles"), "vehicles"); },
       async getAlerts() { return list(await get("/alerts?active=true"), "alerts"); },

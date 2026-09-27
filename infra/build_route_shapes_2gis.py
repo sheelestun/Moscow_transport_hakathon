@@ -252,7 +252,14 @@ def gps_segment_paths(tr_id: int, direction_id: int, rep_stops: list[dict], sche
         best = None
         for vs in same:
             a, b = arrivals.get(vs[k].pos), arrivals.get(vs[k + 1].pos)
-            if a is None or b is None or not (0 < b - a < 1800):
+            if a is None and b is None:
+                continue
+            # Прибытие на одну из двух остановок не нашлось (например, автобус ни разу не подъехал к ней ближе
+            # ARR_RADIUS — стоп чуть в стороне от реального разворота): берём то же окно поиска, что и travel_gap
+            # между рейсами (TRIP_GAP_S = 300 с) от известного конца. Ложный кусок трека отсеет проверка ends ниже.
+            a = b - 300 if a is None else a
+            b = a + 300 if b is None else b
+            if not (0 < b - a < 1800):
                 continue
             m = (ts >= a) & (ts <= b)
             if m.sum() < 2:
@@ -375,7 +382,16 @@ def main() -> None:
             stops_ll = np.array([[st["lat"], st["lon"]] for st in stops])
             paths = (gps_segment_paths(tr_id, int(dir_id), stops, cat_schedules[tr_id], cat, TG[tr_id],
                                        arrivals_by_tr.get(tr_id, {})) if tr_id in TG else None)
-            line, mix = stitch(stops_ll, S, [Line(pl) for pl in polys],
+            # Единая линия 2ГИС для всего направления (line_for_stops), а не отдельный кандидат на каждый перегон:
+            # раньше stitch() выбирал ближайшее направление 2ГИС для каждой пары соседних остановок независимо, и
+            # если для соседних перегонов «выигрывали» разные направления (в т.ч. параллельные полосы туда/обратно),
+            # линия дёргалась зигзагом на стыке. Теперь для всего направления заранее выбирается одна
+            # самосогласованная линия (с корректным разворотом для рейсов «туда-обратно»), и stitch() лишь решает,
+            # где по ней проехать как есть, а где — по-факту наверстать реальным треком (см. max_dev_m ниже).
+            base = line_for_stops(polys, S)
+            row["base_how"] = base[3] if base is not None else None
+            base_lines = [Line(base[0])] if base is not None and len(base[0]) >= 2 else []
+            line, mix = stitch(stops_ll, S, base_lines,
                                Line(np.array(cur)) if cur and len(cur) >= 2 else None, paths)
             if True:
                 cov = stop_coverage(line, S)
