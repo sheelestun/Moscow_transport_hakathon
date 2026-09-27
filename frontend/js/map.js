@@ -259,16 +259,39 @@ window.App = window.App || {};
 
   const isShown = (routeId) => !visible || visible.has(routeId);
 
-  // Линии маршрутов: оба направления (если бэкенд их отдаёт), иначе одна линия
+  // «Направление» у нас — не физическая ветка маршрута, а просто уникальная пара (первая, последняя остановка)
+  // рейса (см. backend RouteCatalog._build); у многих ТС по 4-6 направлений, которые едут по одной и той же
+  // дороге (последний рейс дня укорочен и т.п.). Рисовать их все поверх друг друга даёт «удвоенные»/«растроенные»
+  // линии там, где они чуть-чуть разошлись (разный сплайс по факту GPS, разная обрезка). Считаем направление
+  // дублем уже нарисованного, если большая часть его точек лежит вплотную к уже принятой линии ЭТОГО ЖЕ маршрута,
+  // и тогда его не рисуем — по одной точке в направлениях убеждаться дорого, поэтому сэмплируем.
+  function isDuplicateLine(g, kept) {
+    if (!kept.length) return false;
+    const NEAR_M = 25, NEAR_SHARE = 0.75, step = Math.max(1, Math.floor(g.length / 60));
+    let checked = 0, near = 0;
+    for (let i = 0; i < g.length; i += step) {
+      checked++;
+      if (kept.some((k) => App.geo.project(k.line, k.cum, g[i]).off_m <= NEAR_M)) near++;
+    }
+    return checked > 0 && near / checked >= NEAR_SHARE;
+  }
+
+  // Линии маршрутов: все направления, кроме дублирующих друг друга (см. isDuplicateLine), иначе одна линия
   function routeFeatures(routes, levels) {
     const out = [];
     for (const r of routes) {
       const lines = r.directions && r.directions.length ? r.directions.map((d) => d.geometry) : [r.geometry];
-      for (const g of lines) out.push({
-        type: "Feature",
-        properties: { route_id: r.route_id, level: levels[r.route_id] || "green" },
-        geometry: { type: "LineString", coordinates: g.map(ll) },
-      });
+      const kept = [];
+      for (const g of lines) {
+        if (g.length < 2) continue;
+        if (isDuplicateLine(g, kept)) continue;
+        kept.push({ line: g, cum: App.geo.cumulative(g) });
+        out.push({
+          type: "Feature",
+          properties: { route_id: r.route_id, level: levels[r.route_id] || "green" },
+          geometry: { type: "LineString", coordinates: g.map(ll) },
+        });
+      }
     }
     return out;
   }
